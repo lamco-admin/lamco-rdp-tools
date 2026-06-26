@@ -1,0 +1,7 @@
+# Windows: Ctrl+Alt+Del to reach login fields, then username + Tab + password + Enter.
+key ctrl-alt-delete
+pause 2
+type "{username}"
+key tab
+type-password {password}
+key enter

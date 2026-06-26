@@ -1,0 +1,15 @@
+# GNOME 46 and earlier: Tab 6 times to reach Share, then Space.
+key tab
+pause 0.3
+key tab
+pause 0.3
+key tab
+pause 0.3
+key tab
+pause 0.3
+key tab
+pause 0.3
+key tab
+pause 0.3
+key space
+pause 0.5

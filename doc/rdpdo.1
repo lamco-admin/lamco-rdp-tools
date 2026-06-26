@@ -1,0 +1,369 @@
+.\" rdpdo - RDP automation tool
+.\" Generated from help.rs command documentation
+.TH RDPDO 1 "June 2026" "rdpdo 1.0.0" "User Commands"
+.SH NAME
+rdpdo \- headless RDP automation and visual testing tool
+.SH SYNOPSIS
+.B rdpdo
+.RI [ OPTIONS ]
+.IR COMMANDS ...
+.SH DESCRIPTION
+.B rdpdo
+connects to an RDP server and executes a chain of automation commands:
+keyboard input, mouse actions, visual matching, clipboard operations,
+audio capture, and more. Commands are chained on the command line after
+global flags.
+.PP
+Designed for CI/CD visual testing, OS installer automation, golden image
+validation, and desktop QA over RDP connections.
+.SH OPTIONS
+.TP
+.BI \-s " HOST" "\fR,\fP \-\-server " HOST
+Server address (host or host:port, default port 3389).
+Not required for offline commands (diff, convert, audio-verify, help).
+.TP
+.BI \-u " USER" "\fR,\fP \-\-user " USER
+RDP username.
+.TP
+.BI \-p " PASS" "\fR,\fP \-\-password " PASS
+RDP password.
+.TP
+.B \-\-no\-nla
+Disable NLA/CredSSP; use TLS-only authentication.
+.TP
+.B \-\-no\-auth
+Skip authentication entirely (for servers running with \-\-no-auth).
+.TP
+.BI \-\-timeout " SECONDS"
+Overall session timeout (default: 30).
+.TP
+.BI \-\-width " PIXELS"
+Desktop width (default: 1920).
+.TP
+.BI \-\-height " PIXELS"
+Desktop height (default: 1080).
+.TP
+.B \-\-verbose
+Enable debug tracing to stderr.
+.TP
+.BI \-\-record " PATH"
+Record all commands with timing to a .rdpdo file for later replay.
+.TP
+.BI \-\-calibration " PATH"
+Apply calibration correction to coordinates.
+Use a JSON file path or "auto" to search ~/.config/rdpdo/calibration/.
+.TP
+.B \-\-json
+Emit machine-readable JSON output for matching, stability, pixel,
+and measurement commands.
+.TP
+.BI \-\-fail\-capture " DIR"
+Save a diagnostic PNG screenshot on command failure. Writes to the
+given directory as fail-NNN.png.
+.TP
+.BI \-\-junit " PATH"
+Write a JUnit XML test report after the command chain completes.
+Each command becomes a testcase with timing and pass/fail status.
+.SH COMMANDS
+Commands are positional arguments chained after options. Multiple
+commands execute sequentially in a single RDP session:
+.PP
+.RS
+rdpdo -s host type "hello" key enter pause 2 capture /tmp/out.png
+.RE
+.SS Input
+.TP
+.BI type " TEXT"
+Type ASCII text via US-QWERTY scancode sequences with 30ms inter-key delay.
+.TP
+.BI utype " TEXT"
+Type text using Unicode keyboard events (any language, any layout).
+.TP
+.BI key " SPEC" " [--hold-ms MS]"
+Send a key or key combination. Names: enter, tab, escape, backspace,
+ctrl-alt-delete, f1-f12, etc. Hex scancodes also accepted (0x1C).
+.TP
+.BI keydown " KEY"
+Press and hold a key until a matching keyup.
+.TP
+.BI keyup " KEY"
+Release a previously held key.
+.TP
+.BI move " POSITION"
+Move mouse cursor to a position.
+.TP
+.BI click " POSITION" " [BUTTON]"
+Click at a position. Button: left (default), right, middle.
+.TP
+.BI doubleclick " POSITION"
+Double-click at a position.
+.TP
+.BI drag " FROM" " TO"
+Drag from one position to another.
+.TP
+.BI scroll " DIRECTION" " NOTCHES"
+Scroll up or down by N notches.
+.TP
+.BI type\-password " SOURCE"
+Type a password without logging it. Source: env:VAR, file:PATH, or literal.
+.TP
+.B mouse\-hide
+Move cursor off-screen (65535,65535) to prevent screenshot interference.
+.SS Capture
+.TP
+.BI capture " PATH" " [REGION]"
+Save a screenshot to PATH. Use "-" for stdout. Optional region: x,y,WxH.
+.TP
+.BI rcapture " REGION" " PATH"
+Capture a specific screen region.
+.TP
+.BI timelapse " TEMPLATE" " [FLAGS]"
+Periodic screenshot capture. Template uses {n} for sequence number.
+Flags: --interval MS, --count N, --duration S, --until IMAGE, --tolerance N.
+.SS Visual Matching
+.TP
+.BI expect " REFERENCE" " [TOLERANCE] [TIMEOUT] [--needles DIR] [--tag NAME]"
+Wait until full screen matches a reference image (Pearson correlation).
+.TP
+.BI waitfor " TEMPLATE" " [TOLERANCE] [TIMEOUT] [--needles DIR] [--tag NAME]"
+Search for a template image anywhere on screen and wait until found.
+.TP
+.BI expectclick " TEMPLATE" " [TOLERANCE] [TIMEOUT] [--needles DIR] [--tag NAME]"
+Find a template image on screen, then click its center.
+.TP
+.BI rexpect " REGION" " REFERENCE" " [TOLERANCE] [TIMEOUT]"
+Wait for a screen region to match a reference image.
+.TP
+.BI repeat\-key " KEY" " TEMPLATE" " [TOLERANCE] [TIMEOUT] [INTERVAL] [MAX]"
+Press a key repeatedly until a template matches on screen.
+.TP
+.BI measure " TEMPLATE" " [TOLERANCE] [TIMEOUT] [--label NAME]"
+Time how long until a visual match succeeds. Reports elapsed_ms.
+With --json, output is {"label":"...","elapsed_ms":N,"matched":true}.
+.TP
+.BI diff " IMAGE_A" " IMAGE_B" " [THRESHOLD] [--output PATH] [--mode MODE] [--exclude REGION]"
+Offline comparison of two images. Modes: highlight, side-by-side, heatmap.
+Exclude regions mask out areas (clocks, timestamps) from comparison.
+Does not require an RDP connection.
+.SS Screen Stability
+.TP
+.BI wait\-still " [STILLNESS_MS] [TIMEOUT_S]"
+Wait until screen stops updating for the given stillness period.
+Default: 500ms stillness, 10s timeout.
+.TP
+.BI wait\-change " [TIMEOUT_S]"
+Wait until the screen changes (a new frame arrives). Default: 30s timeout.
+.SS Clipboard
+.TP
+.BI set\-clipboard " TEXT"
+Set clipboard text on the remote server.
+.TP
+.B get\-clipboard
+Read clipboard text from the server (prints to stdout).
+.TP
+.BI clipboard\-send\-file " PATH"
+Send a local file to the remote clipboard.
+.TP
+.BI clipboard\-recv\-file " PATH"
+Receive a file from the remote clipboard and save locally.
+.SS Display Control
+.TP
+.BI resize " WIDTHxHEIGHT"
+Resize the remote desktop via DisplayControl channel.
+.TP
+.BI monitor " ACTION"
+Multi-monitor control. Actions: list, set WIDTHxHEIGHT.
+.SS Audio
+.TP
+.BI audio\-capture " PATH" " [DURATION]"
+Record audio from the RDPSND channel to a WAV file.
+.TP
+.BI audio\-assert\-playing " [TIMEOUT]"
+Assert that audio is currently playing (non-silence).
+.TP
+.BI audio\-verify " CAPTURED" " REFERENCE" " [TOLERANCE]"
+Offline comparison of two WAV files via Pearson correlation.
+Does not require an RDP connection.
+.SS Pixel Analysis
+.TP
+.BI pixel " POSITION"
+Read the color of a pixel (prints R,G,B,A or JSON with --json).
+.TP
+.BI assert\-pixel " POSITION" " COLOR" " [TOLERANCE]"
+Assert pixel matches expected color (fail if not).
+Color: #RRGGBB or R,G,B. Tolerance: per-channel 0-255 (default: 30).
+.TP
+.BI wait\-pixel " POSITION" " COLOR" " [TOLERANCE] [TIMEOUT]"
+Wait until pixel at position matches a color.
+Polls every 250ms. Default: tolerance 30, timeout 30s.
+.TP
+.BI checksum " REGION"
+CRC32 checksum of a screen region's pixel data.
+.TP
+.BI wait\-checksum\-change " REGION" " [TIMEOUT]"
+Wait until a region's checksum changes.
+.TP
+.BI assert\-checksum " REGION" " EXPECTED"
+Assert a region matches a known checksum.
+.TP
+.BI find\-color " COLOR" " [REGION] [TOLERANCE] [MIN_AREA]"
+Find clusters of a color on screen. Reports centroid and bounding box.
+.SS Provisioning
+.TP
+.BI accept\-portal " COMPOSITOR" " [--profile NAME] [--verify]"
+Accept a compositor's screen-sharing permission dialog.
+.TP
+.BI unlock " COMPOSITOR" " PASSWORD" " [--profile NAME] [--verify]"
+Unlock a locked screen.
+.TP
+.BI login " USERNAME" " PASSWORD" " [--profile NAME] [--verify]"
+Type credentials into a login screen using compositor-specific profiles.
+.TP
+.BI boot\-sequence " SCRIPT"
+Run a provisioning script with longer default timeouts.
+.SS Calibration
+.TP
+.BI calibrate " [--grid NxN] [--output PATH] [--deploy METHOD] [--quick]"
+Run click calibration grid to measure coordinate offset.
+Default: 4x4 grid, clipboard deployment.
+.SS Scripting & Recording
+.TP
+.BI run " SCRIPT"
+Execute commands from a .rdpdo-script file.
+Variables: {env:VAR}, {width}, {height}, {server}.
+.TP
+.BI play " PATH" " [SPEED]"
+Replay a timed .rdpdo recording with optional speed multiplier.
+.TP
+.BI convert " INPUT" " OUTPUT"
+Convert between recording (.rdpdo) and script (.rdpdo-script) formats.
+Does not require an RDP connection.
+.TP
+.BI retry " COUNT"
+Modifier: retry the next command up to COUNT times on failure.
+Waits 500ms between attempts.
+.TP
+.B soft
+Modifier: make the next command non-fatal. Logs failure but continues
+the command chain. Combine with retry for resilient scripts.
+.SS Baseline Management
+.TP
+.BI baseline " update NAME" " [--dir PATH]"
+Save current screen as a named baseline reference.
+.TP
+.BI baseline " list" " [--dir PATH]"
+List saved baselines.
+.TP
+.BI baseline " check NAME" " [TOLERANCE] [--dir PATH]"
+Compare current screen against a saved baseline.
+.SS Info & Diagnostics
+.TP
+.B info
+Print connection info as JSON.
+.TP
+.B perf
+Print performance metrics as JSON (FPS, latency, bandwidth).
+.TP
+.BI pause " SECONDS"
+Pause for N seconds (supports fractions). Processes server PDUs during wait.
+Aliases: sleep, wait.
+.TP
+.BI help " [COMMAND]"
+Show help for all commands or a specific command.
+Does not require an RDP connection.
+.SH COORDINATE FORMATS
+Positions can be specified as:
+.TP
+.B Pixels
+500,300
+.TP
+.B Percentage
+50%,50%
+.TP
+.B Named
+center, top-left, top-right, bottom-left, bottom-right,
+top-center, bottom-center, left-center, right-center
+.SH TOLERANCE
+Tolerance values accept either 0.0-1.0 or 1-100. Both 0.95 and 95
+mean 95% match threshold.
+.SH SCRIPT FORMAT
+The .rdpdo-script format uses one command per line:
+.PP
+.RS
+.nf
+# Comments start with #
+type "hello world"
+key enter
+pause 2
+capture /tmp/screenshot.png
+expect /tmp/expected.png 0.95 30
+
+# Variables are expanded at parse time
+type "{env:USERNAME}"
+capture /tmp/{server}-{width}x{height}.png
+.fi
+.RE
+.SH EXIT STATUS
+.TP
+.B 0
+All commands completed successfully.
+.TP
+.B 1
+A command failed (timeout, assertion failure, connection error, etc.).
+Soft failures do not affect the exit status.
+.SH EXAMPLES
+Simple login and screenshot:
+.PP
+.RS
+rdpdo -s 192.168.1.10 -u admin -p secret type "password" key enter pause 3 capture /tmp/desktop.png
+.RE
+.PP
+Visual testing with CI output:
+.PP
+.RS
+rdpdo -s host --no-auth --json --junit results.xml \\
+  mouse-hide expect /tmp/desktop.png 0.95 60 \\
+  capture /tmp/actual.png
+.RE
+.PP
+Resilient automation with retry and soft assertions:
+.PP
+.RS
+rdpdo -s host --fail-capture /tmp/fails \\
+  soft retry 3 expect /tmp/splash.png 0.9 10 \\
+  type "admin" key tab type "password" key enter \\
+  retry 5 waitfor /tmp/desktop.png 0.9 120 \\
+  measure /tmp/app-icon.png --label app-ready
+.RE
+.PP
+Measure login time:
+.PP
+.RS
+rdpdo -s host -u user -p pass --json \\
+  measure /tmp/desktop.png 0.9 120 --label login-time
+.RE
+.PP
+Offline image comparison with exclusion zones:
+.PP
+.RS
+rdpdo diff before.png after.png 0.99 \\
+  --output diff.png --exclude 0,0,200x30
+.RE
+.SH ENVIRONMENT
+.TP
+.B RDPDO_*
+Environment variables referenced in scripts via {env:VARNAME}.
+.SH FILES
+.TP
+.I ~/.config/rdpdo/calibration/
+Calibration profiles (JSON), organized by server and resolution.
+.TP
+.I ~/.config/rdpdo/baselines/
+Baseline screenshots for visual regression testing.
+.SH SEE ALSO
+.BR rdpsee (1),
+.BR freerdp-shadow-cli (1),
+.BR xdotool (1),
+.BR vncdotool (1)
+.SH AUTHORS
+Lamco Development LLC <office@lamco.io>

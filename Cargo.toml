@@ -1,0 +1,90 @@
+[package]
+name = "lamco-rdp-tools"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "A toolkit of focused RDP utilities: rdpsee inspects a server, rdpdo drives a session."
+authors = ["Lamco Development LLC <office@lamco.io>"]
+homepage = "https://lamco.ai/products/lamco-rdp-tools/"
+documentation = "https://lamco.ai/products/lamco-rdp-tools/"
+repository = "https://github.com/lamco-admin/lamco-rdp-tools"
+readme = "README.md"
+keywords = ["rdp", "automation", "cli", "screenshot", "testing"]
+categories = ["command-line-utilities", "development-tools::testing"]
+
+[lib]
+name = "lamco_rdp_tools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rdpsee"
+path = "src/bin/rdpsee.rs"
+
+[[bin]]
+name = "rdpdo"
+path = "src/bin/rdpdo.rs"
+
+[dependencies]
+# IronRDP protocol stack — published crates.io releases.
+# EGFX shipped to crates.io in the 2026-06-17 release wave (ironrdp-egfx 0.2.0),
+# removing the need for git/master deps. rdpdo consumes sub-crates directly
+# (the `ironrdp` umbrella and `ironrdp-svc` are unused).
+ironrdp-connector = "0.9"
+ironrdp-session = "0.10"
+ironrdp-tokio = { version = "0.9", features = ["reqwest"] }
+ironrdp-tls = { version = "0.2", features = ["rustls"] }
+ironrdp-pdu = "0.8"
+ironrdp-core = "0.2"
+ironrdp-cliprdr = "0.6"
+ironrdp-dvc = "0.7"
+ironrdp-egfx = { version = "0.2", features = ["openh264-libloading"] }
+ironrdp-input = "0.6"
+ironrdp-graphics = "0.8"
+ironrdp-displaycontrol = "0.7"
+ironrdp-rdpsnd = "0.8"
+
+# Runtime
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+chrono = "0.4"
+dirs = "5"
+smallvec = "1"
+rustyline = "14"
+
+# H.264 decode (system library fallback when hash verification fails)
+openh264 = { version = "0.9", default-features = false, features = ["libloading"] }
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["png"] }
+imageproc = "0.25"
+
+# Certificate inspection (rdpsee cert). Both are already in the IronRDP
+# dependency tree: ironrdp-tls returns an x509-cert Certificate directly.
+x509-cert = "0.2"
+sha2 = "0.10"
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+elided_lifetimes_in_paths = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+pedantic = { priority = -1, level = "deny" }
+allow_attributes = "deny"
+missing_errors_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+wildcard_imports = "deny"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+cast_precision_loss = "allow"
+struct_excessive_bools = "allow"

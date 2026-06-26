@@ -1,0 +1,3 @@
+# Niri: Smithay-based, portal where Enter works.
+key enter
+pause 0.5

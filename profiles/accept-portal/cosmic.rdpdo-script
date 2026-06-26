@@ -1,0 +1,3 @@
+# COSMIC: portal dialog, Enter to accept.
+key enter
+pause 0.5

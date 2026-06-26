@@ -1,0 +1,3 @@
+# Sway/wlroots: portal uses chooser_type=none or gtk portal where Enter works.
+key enter
+pause 0.5

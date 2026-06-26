@@ -1,0 +1,7 @@
+# KDE: Esc wakes lock screen, type password, Enter to submit.
+key escape
+pause 1.5
+type-password {password}
+pause 0.3
+key enter
+pause 2.0

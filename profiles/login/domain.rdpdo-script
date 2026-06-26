@@ -1,0 +1,7 @@
+# Domain login: domain + Tab + username + Tab + password + Enter.
+type "{domain}"
+key tab
+type "{username}"
+key tab
+type-password {password}
+key enter

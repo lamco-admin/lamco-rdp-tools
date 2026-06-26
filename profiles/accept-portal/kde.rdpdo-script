@@ -1,0 +1,5 @@
+# KDE: Tab to ensure Share button has focus, then Enter to accept.
+key tab
+pause 0.3
+key enter
+pause 0.5

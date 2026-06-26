@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>rdpdo calibration</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a1a; overflow: hidden; cursor: crosshair; }
+canvas { display: block; }
+#hud {
+  position: fixed; top: 8px; left: 8px;
+  color: #888; font: 12px monospace;
+  background: rgba(0,0,0,0.7); padding: 6px 10px;
+  border-radius: 4px; z-index: 10;
+  pointer-events: none;
+}
+</style>
+</head>
+<body>
+<div id="hud"></div>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hud = document.getElementById('hud');
+const clicks = [];
+let grid = null;
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  draw();
+}
+
+function parseGrid() {
+  const params = new URLSearchParams(window.location.search);
+  const g = params.get('grid') || '4x4';
+  const parts = g.split('x');
+  return { cols: parseInt(parts[0]) || 4, rows: parseInt(parts[1]) || 4 };
+}
+
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, w, h);
+
+  if (!grid) grid = parseGrid();
+  const cols = grid.cols, rows = grid.rows;
+
+  // Grid lines
+  ctx.strokeStyle = '#1a1a2e';
+  ctx.lineWidth = 1;
+  for (let c = 1; c < cols; c++) {
+    const x = Math.round(w * c / cols);
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+  for (let r = 1; r < rows; r++) {
+    const y = Math.round(h * r / rows);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+
+  // Target crosshairs at grid intersections (cell centers)
+  ctx.strokeStyle = '#cc3333';
+  ctx.lineWidth = 1;
+  ctx.font = '10px monospace';
+  ctx.fillStyle = '#cc3333';
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const x = Math.round(w * (c + 0.5) / cols);
+      const y = Math.round(h * (r + 0.5) / rows);
+      const arm = 12;
+      ctx.beginPath();
+      ctx.moveTo(x - arm, y); ctx.lineTo(x + arm, y);
+      ctx.moveTo(x, y - arm); ctx.lineTo(x, y + arm);
+      ctx.stroke();
+      ctx.fillText(`${x},${y}`, x + 4, y - 4);
+    }
+  }
+
+  // Green markers at click positions
+  for (const click of clicks) {
+    ctx.beginPath();
+    ctx.arc(click.x, click.y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#00ff41';
+    ctx.fill();
+  }
+
+  updateHud();
+}
+
+function updateHud() {
+  const last = clicks.length > 0 ? clicks[clicks.length - 1] : null;
+  const lines = [
+    `window: ${window.screenX},${window.screenY}`,
+    `inner: ${window.innerWidth}x${window.innerHeight}`,
+    `outer: ${window.outerWidth}x${window.outerHeight}`,
+    `dpr: ${window.devicePixelRatio}`,
+    `clicks: ${clicks.length}`,
+  ];
+  if (last) {
+    lines.push(`last_client: ${last.x},${last.y}`);
+    lines.push(`last_screen: ${last.sx},${last.sy}`);
+  }
+  hud.textContent = lines.join('\n');
+}
+
+canvas.addEventListener('click', function(e) {
+  clicks.push({
+    x: e.clientX, y: e.clientY,
+    sx: e.screenX, sy: e.screenY
+  });
+  draw();
+});
+
+window.addEventListener('resize', resize);
+resize();
+</script>
+</body>
+</html>

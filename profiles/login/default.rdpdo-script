@@ -1,0 +1,5 @@
+# Default login: username + Tab + password + Enter.
+type "{username}"
+key tab
+type-password {password}
+key enter

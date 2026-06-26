@@ -1,0 +1,196 @@
+.\" rdpsee - RDP server inspection tool (the observe companion to rdpdo)
+.\" Generated from rdpsee command documentation
+.TH RDPSEE 1 "June 2026" "rdpsee 1.0.0" "User Commands"
+.SH NAME
+rdpsee \- RDP server inspection and reconnaissance tool
+.SH SYNOPSIS
+.B rdpsee
+.RI [ OPTIONS ]
+.I COMMAND
+.RI [ TARGET ...]
+.SH DESCRIPTION
+.B rdpsee
+inspects an RDP server and reports on it; unlike its companion
+.BR rdpdo (1),
+it never drives the session or injects input. It observes one of three
+tiers of depth, from a connectionless pre-auth probe through a TLS handshake
+to a fully completed session, and authenticates only where reading requires it.
+.PP
+One command runs per invocation:
+.B rdpsee
+.I COMMAND
+.RI [ TARGET ...].
+Global flags may appear anywhere on the command line.
+.SH OPTIONS
+.TP
+.BI \-s " HOST" "\fR,\fP \-\-server " HOST
+Server address (host or host:port, default port 3389). Not required for the
+offline \fBhelp\fP command; \fBscan\fP can instead take targets positionally.
+.TP
+.BI \-u " USER" "\fR,\fP \-\-user " USER
+RDP username. rdpsee observes pre-auth where the server allows it; credentials
+are used only by \fBreport\fP and \fBshot\fP, and only to read.
+.TP
+.BI \-p " PASS" "\fR,\fP \-\-password " PASS
+RDP password.
+.TP
+.B \-\-no\-nla
+Disable NLA/CredSSP; use TLS-only.
+.TP
+.B \-\-no\-auth
+Skip authentication entirely (for servers that allow anonymous connections).
+.TP
+.BI \-\-timeout " SECONDS"
+Overall timeout (default: 30).
+.TP
+.BI \-\-width " PIXELS"
+Desktop width requested during capability negotiation (default: 1920).
+.TP
+.BI \-\-height " PIXELS"
+Desktop height requested during capability negotiation (default: 1080).
+.TP
+.B \-\-json
+Emit machine-readable JSON. Honored by every command; \fBscan\fP always emits
+an array.
+.TP
+.B \-\-verbose
+Enable debug tracing to stderr.
+.TP
+.B \-\-ci
+With \fBscan\fP, exit non-zero unless every target meets \fB\-\-expect\fP.
+.TP
+.BI \-\-expect " CAPS"
+With \fBscan\fP \fB\-\-ci\fP, the comma-separated capabilities every target must
+meet: reachable, tls, nla, egfx.
+.SH COMMANDS
+.SS Report
+.TP
+.BI scan " [TARGET...]" " [\-\-ci] [\-\-expect CAPS]"
+Probe one or many servers' security posture pre-auth, with no login. Drives
+only the X.224 security negotiation (RDP_NEG_REQ / RDP_NEG_RSP): no TLS
+handshake, no MCS, no authentication. Reports reachability, the selected
+security protocol (STANDARD_RDP_SECURITY, SSL/TLS, HYBRID, or HYBRID_EX),
+whether NLA/CredSSP is required, and the pre-auth capability flags (EGFX,
+restricted-admin, redirected-auth, extended-client-data). A rejected
+negotiation is reported with its failure code (e.g. SSL_REQUIRED_BY_SERVER,
+HYBRID_REQUIRED_BY_SERVER). Targets accept hostnames, host:port, and IPv4 CIDR
+ranges (/16 to /32, capped at 65536 hosts), probed concurrently in input order.
+A single target prints a detail block; multiple print a compact sweep table.
+.TP
+.B cert
+Inspect a server's TLS certificate, no login required. Negotiates an
+enhanced-security protocol and completes the TLS handshake without
+authenticating, then reports the certificate: subject, issuer, self-signed
+status, validity window, serial, signature and public-key algorithms, subject
+alternative names, and the SHA-256 fingerprint of the certificate DER. Fails if
+the server offers only standard RDP security.
+.TP
+.B id
+Fingerprint a server. Negotiates TLS (no authentication) and derives a stable
+JA4-style fingerprint of the server's configuration, alongside the certificate
+SHA-256 (the exact-instance identity). See FINGERPRINT FORMAT below.
+.TP
+.BI shot " [PATH]"
+Capture a screenshot of the server's current screen to PATH (default:
+screenshot.png). Completes the connection (it needs decoded frames), polls for
+real content for up to 10 seconds, then saves a PNG. With no credentials it
+captures the login screen where the server allows it; with \fB\-u\fP/\fB\-p\fP
+it captures the post-login desktop.
+.TP
+.B report
+Connect and report basic capabilities: desktop size and graphics mode (EGFX vs
+bitmap). Authenticates only if credentials are supplied. This is the default
+action when no command is given. For pre-auth security detail across one or many
+targets, prefer \fBscan\fP.
+.SS Info & Diagnostics
+.TP
+.BI help " [COMMAND]"
+Show help for all commands or a specific command. Does not require \fB\-s\fP.
+.SH OBSERVATION TIERS
+.TP
+.B Connectionless (no auth)
+.B scan
+\(em X.224 security negotiation only.
+.TP
+.B TLS handshake (no auth)
+.BR cert ", " id
+\(em complete the TLS handshake, no CredSSP or session.
+.TP
+.B Completed session
+.BR report ", " shot
+\(em complete the connection; authenticate only with \fB\-u\fP/\fB\-p\fP.
+.SH FINGERPRINT FORMAT
+The
+.B id
+command produces a fingerprint of the form
+.IR rdp_ <sec><caps>_<signing><key>/<hash> :
+.TP
+.I <sec>
+Security tier: q=HYBRID_EX, h=HYBRID, s=SSL/TLS, r=standard-RDP.
+.TP
+.I <caps>
+Capability flags, any of: g=EGFX, a=restricted-admin, d=redirected-auth,
+e=extended-client-data (\- when none).
+.TP
+.I <signing>
+S=self-signed, C=CA-signed.
+.TP
+.I <key>
+Server key type: r=RSA, e=ECDSA, d=Ed25519, x=other.
+.TP
+.I <hash>
+16 hex chars: a truncated SHA-256 over the raw protocol bits and certificate
+algorithm OIDs, independent of name formatting.
+.PP
+Two servers with the same fingerprint share the same RDP security and capability
+posture; an identical certificate SHA-256 means the same instance.
+.SH TARGET FORMATS
+.TP
+.B Host
+host \fRor\fP host:3389
+.TP
+.B IPv4 CIDR
+10.0.0.0/24 (\fBscan\fP only, /16 to /32)
+.SH EXIT STATUS
+.TP
+.B 0
+Success. With \fBscan \-\-ci\fP, every target also met \fB\-\-expect\fP.
+.TP
+.B 1
+A failure, timeout, or an unmet \fB\-\-expect\fP.
+.SH EXAMPLES
+Probe a single server's pre-auth security posture:
+.PP
+.RS
+rdpsee -s 192.168.1.10 scan
+.RE
+.PP
+Sweep a subnet and gate in CI on enhanced security with NLA:
+.PP
+.RS
+rdpsee scan 10.0.0.0/24 --ci --expect tls,nla
+.RE
+.PP
+Inspect a server's certificate as JSON:
+.PP
+.RS
+rdpsee -s host --json cert
+.RE
+.PP
+Fingerprint a server:
+.PP
+.RS
+rdpsee -s host id
+.RE
+.PP
+Capture the post-login desktop:
+.PP
+.RS
+rdpsee -s host -u user -p pass shot desktop.png
+.RE
+.SH SEE ALSO
+.BR rdpdo (1),
+.BR nmap (1),
+.BR sslscan (1)
+.SH AUTHORS
+Lamco Development LLC <office@lamco.io>

@@ -1,0 +1,8 @@
+# GNOME 49+: Combined "Remote Desktop" dialog with toggle + Share button.
+# Enter toggles interaction switch, Shift+Tab moves to Share, Enter accepts.
+key enter
+pause 0.5
+key shift-tab
+pause 0.3
+key enter
+pause 0.5
