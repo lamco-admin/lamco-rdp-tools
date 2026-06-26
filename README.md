@@ -110,14 +110,26 @@ cargo build --release
 # binaries: target/release/rdpsee and target/release/rdpdo
 ```
 
+### Windows
+
+The release includes `rdpsee.exe` and `rdpdo.exe`, built for
+`x86_64-pc-windows-msvc` and statically linked, so each runs as a single file
+with no Visual C++ redistributable required. Unzip them and run from a terminal.
+For H.264 decode, place `openh264.dll` next to the `.exe` (or point
+`OPENH264_LIBRARY_PATH` at it); without it, other codecs still decode. The
+binaries are not yet Authenticode-signed, so Windows SmartScreen shows a one-time
+warning on first run. Configuration (profiles, calibration) lives under
+`%APPDATA%\rdpdo\`.
+
 ## Requirements
 
 - Rust 1.89+ and edition 2024 (to build from source)
 - A reachable RDP target (the tools are clients; they do not host a server)
-- **Optional:** OpenH264 shared library for H.264/AVC420 decode in `rdpsee shot`
-  and `rdpdo` capture. It is loaded at runtime via `libloading`; without it,
-  H.264 frames are skipped and other codecs (uncompressed, RemoteFX) still
-  decode.
+- **Optional:** the OpenH264 shared library for H.264/AVC420 decode in
+  `rdpsee shot` and `rdpdo` capture (`libopenh264.so` on Linux, `openh264.dll` on
+  Windows). It is loaded at runtime; the tools look next to the executable, then
+  in the system locations, or wherever `OPENH264_LIBRARY_PATH` points. Without it,
+  H.264 frames are skipped and other codecs (uncompressed, RemoteFX) still decode.
 
 ## Documentation
 

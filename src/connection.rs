@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -534,7 +534,14 @@ pub(crate) async fn connect_headless(
 // H.264 Decoder Loading
 // ============================================================================
 
-/// Search paths for the Cisco `OpenH264` shared library on Linux.
+/// Default filename of the Cisco `OpenH264` shared library for this platform.
+#[cfg(windows)]
+const OPENH264_LIB_NAME: &str = "openh264.dll";
+#[cfg(not(windows))]
+const OPENH264_LIB_NAME: &str = "libopenh264.so";
+
+/// System search paths for the Cisco `OpenH264` shared library, per platform.
+#[cfg(target_os = "linux")]
 const OPENH264_SEARCH_PATHS: &[&str] = &[
     "/usr/lib/x86_64-linux-gnu/libopenh264.so",
     "/usr/lib/x86_64-linux-gnu/libopenh264.so.8",
@@ -542,58 +549,73 @@ const OPENH264_SEARCH_PATHS: &[&str] = &[
     "/usr/lib64/libopenh264.so",
     "/usr/lib/libopenh264.so",
 ];
+/// On Windows the library is found next to the executable or via the DLL search
+/// order; a bare name also covers the working directory.
+#[cfg(windows)]
+const OPENH264_SEARCH_PATHS: &[&str] = &["openh264.dll"];
+#[cfg(not(any(target_os = "linux", windows)))]
+const OPENH264_SEARCH_PATHS: &[&str] = &[];
 
-/// Try to load an H.264 decoder from the system.
+/// Try to load an H.264 decoder.
 ///
-/// Three-tier strategy:
-/// 1. Upstream `OpenH264Decoder::from_library_path()` — hash-verified Cisco binary
-/// 2. Direct `openh264` crate with unchecked loading — works with distro packages
-/// 3. `None` — AVC420 frames are skipped, other codecs still work
+/// Search order: the `OPENH264_LIBRARY_PATH` override, then the library next to our
+/// own executable, then the per-platform system search paths. Each candidate is
+/// loaded through `try_load_h264`. Returns `None` when none is found, in which case
+/// AVC420 frames are skipped and other codecs still decode.
 fn load_h264_decoder() -> Option<Box<dyn H264Decoder>> {
-    // Honor explicit path override
-    let env_path = std::env::var("OPENH264_LIBRARY_PATH").ok();
-    let candidates: Vec<&str> = if let Some(ref path) = env_path {
-        vec![path.as_str()]
-    } else {
-        OPENH264_SEARCH_PATHS.to_vec()
-    };
+    if let Ok(path) = std::env::var("OPENH264_LIBRARY_PATH") {
+        return try_load_h264(&PathBuf::from(path));
+    }
 
-    for candidate in &candidates {
-        let path = Path::new(candidate);
-        if !path.exists() {
-            continue;
-        }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        candidates.push(dir.join(OPENH264_LIB_NAME));
+    }
+    candidates.extend(OPENH264_SEARCH_PATHS.iter().map(PathBuf::from));
 
-        // Tier 1: upstream hash-verified loader
-        match decode::OpenH264Decoder::from_library_path(path) {
-            Ok(decoder) => {
-                info!(
-                    path = candidate,
-                    "H.264 decode enabled (Cisco verified binary)"
-                );
-                return Some(Box::new(decoder));
-            }
-            Err(e) => {
-                debug!(path = candidate, error = %e, "Hash-verified load failed, trying unchecked");
-            }
-        }
-
-        // Tier 2: unchecked loading (works with distro-repackaged libraries)
-        match SystemH264Decoder::load(path) {
-            Ok(decoder) => {
-                info!(path = candidate, "H.264 decode enabled (system library)");
-                return Some(Box::new(decoder));
-            }
-            Err(e) => {
-                debug!(path = candidate, error = %e, "System library load failed");
-            }
+    for path in &candidates {
+        if let Some(decoder) = try_load_h264(path) {
+            return Some(decoder);
         }
     }
 
     warn!(
-        "H.264 decode unavailable: libopenh264 not found (set OPENH264_LIBRARY_PATH to override)"
+        "H.264 decode unavailable: OpenH264 library not found (set OPENH264_LIBRARY_PATH to override)"
     );
     None
+}
+
+/// Load an H.264 decoder from one path, with a two-tier fallback: the upstream
+/// hash-verified Cisco loader first, then unchecked loading for distro-repackaged
+/// libraries. Returns `None` if the path does not exist or neither tier loads.
+fn try_load_h264(path: &Path) -> Option<Box<dyn H264Decoder>> {
+    if !path.exists() {
+        return None;
+    }
+
+    match decode::OpenH264Decoder::from_library_path(path) {
+        Ok(decoder) => {
+            info!(path = %path.display(), "H.264 decode enabled (Cisco verified binary)");
+            return Some(Box::new(decoder));
+        }
+        Err(e) => {
+            debug!(path = %path.display(), error = %e, "Hash-verified load failed, trying unchecked");
+        }
+    }
+
+    match SystemH264Decoder::load(path) {
+        Ok(decoder) => {
+            info!(path = %path.display(), "H.264 decode enabled (system library)");
+            Some(Box::new(decoder))
+        }
+        Err(e) => {
+            debug!(path = %path.display(), error = %e, "System library load failed");
+            None
+        }
+    }
 }
 
 /// H.264 decoder using the system `OpenH264` library without hash verification.
@@ -713,6 +735,7 @@ impl H264Decoder for SystemH264Decoder {
 
 fn hostname() -> String {
     std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
         .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_owned()))
         .unwrap_or_else(|_| "rdpdo".to_owned())
 }

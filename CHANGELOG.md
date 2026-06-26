@@ -5,6 +5,23 @@ All notable changes to lamco-rdp-tools are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Versions tag the toolkit as a whole;
 both binaries (`rdpsee`, `rdpdo`) ship together.
 
+## [1.1.0] - 2026-06-26
+
+Windows support.
+
+### Added
+
+- Self-contained Windows binaries: `rdpsee.exe` and `rdpdo.exe` for
+  `x86_64-pc-windows-msvc`, statically linked (no Visual C++ redistributable
+  required), on the pure-Rust rustls TLS stack.
+
+### Changed
+
+- The OpenH264 library is now discovered per platform (`libopenh264.so` on
+  Linux, `openh264.dll` on Windows) and next to the executable, so a library
+  placed beside the binary is found. Without it, other codecs still decode.
+- The RDP client name now uses `COMPUTERNAME` on Windows.
+
 ## [1.0.0] - 2026-06-26
 
 First public release.

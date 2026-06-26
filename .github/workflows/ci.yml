@@ -24,6 +24,23 @@ jobs:
       - name: Clippy (pedantic gate)
         run: cargo clippy --release --bins
 
+  build-windows:
+    name: build + clippy (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The rustls crypto backend (aws-lc-rs) builds C/asm on Windows.
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+      - name: Build
+        run: cargo build --release --bins
+      - name: Clippy (pedantic gate)
+        run: cargo clippy --release --bins
+
   format:
     name: rustfmt
     runs-on: ubuntu-latest

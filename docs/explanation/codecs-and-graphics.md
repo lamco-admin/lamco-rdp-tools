@@ -45,6 +45,11 @@ H.264/AVC420 decode uses the OpenH264 shared library, loaded at runtime via
 skipped and the other codecs still decode. Install OpenH264 if you need to capture
 servers that stream H.264.
 
+The library file is `libopenh264.so` on Linux and `openh264.dll` on Windows. The
+tools look for it next to the executable first, then in the system locations, and
+finally wherever `OPENH264_LIBRARY_PATH` points. On Windows the simplest setup is
+to drop `openh264.dll` next to `rdpdo.exe` and `rdpsee.exe`.
+
 ## Why `shot` waits
 
 EGFX frames arrive over the dynamic channel and can take a few seconds on a busy

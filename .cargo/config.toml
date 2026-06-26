@@ -1,0 +1,5 @@
+# Self-contained Windows binaries: statically link the MSVC runtime so the .exe
+# needs no Visual C++ redistributable. Combined with rustls (pure Rust TLS), this
+# yields a single standalone executable. Does not affect non-Windows targets.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

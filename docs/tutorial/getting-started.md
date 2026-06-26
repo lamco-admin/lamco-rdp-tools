@@ -23,7 +23,10 @@ cargo build --release
 ```
 
 This produces two binaries, `target/release/rdpsee` and `target/release/rdpdo`.
-Put them on your `PATH`, or run them by full path. Confirm they work:
+Put them on your `PATH`, or run them by full path. On Windows, download
+`rdpsee.exe` and `rdpdo.exe` from the release instead (they are self-contained;
+see the [README](../../README.md#windows) for the Windows notes). Confirm they
+work:
 
 ```bash
 rdpsee --help
