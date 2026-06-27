@@ -252,8 +252,7 @@ impl HeadlessSession {
                         Ok((action, payload)) => {
                             self.metrics.record_bytes_received(payload.len() as u64);
                             trace!(?action, len = payload.len());
-                            self.active_stage.process(&mut self.image, action, &payload)
-                                .map_err(|e| anyhow::anyhow!("process PDU: {e:?}"))
+                            self.process_pdu(action, &payload)
                         }
                         Err(e) => {
                             info!(frames = self.metrics.graphics_updates, "Peer disconnected: {e}");
@@ -275,10 +274,14 @@ impl HeadlessSession {
     /// Process incoming frames until at least one graphics update arrives, or timeout.
     pub(crate) async fn wait_for_frame(&mut self, timeout: Duration) -> Result<bool> {
         let deadline = Instant::now() + timeout;
-        let initial_count = self.metrics.graphics_updates;
+        // Count both legacy bitmap updates and EGFX decoded frames. EGFX frames
+        // arrive via the DVC graphics pipeline and increment `egfx_frame_count`,
+        // not `graphics_updates`, so keying on the bitmap counter alone misses
+        // them entirely (an AVC420 server then always reports no initial frame).
+        let initial_count = self.frame_count();
 
         loop {
-            if self.metrics.graphics_updates > initial_count {
+            if self.frame_count() > initial_count {
                 return Ok(true);
             }
 
@@ -292,8 +295,7 @@ impl HeadlessSession {
                     let result = match frame {
                         Ok((action, payload)) => {
                             self.metrics.record_bytes_received(payload.len() as u64);
-                            self.active_stage.process(&mut self.image, action, &payload)
-                                .map_err(|e| anyhow::anyhow!("process PDU: {e:?}"))
+                            self.process_pdu(action, &payload)
                         }
                         Err(e) => {
                             debug!("Peer disconnected while waiting for frame: {e}");
@@ -307,6 +309,27 @@ impl HeadlessSession {
                     return Ok(false);
                 }
             }
+        }
+    }
+
+    /// Process one PDU through the active stage, tolerating the benign "data for a
+    /// DVC channel we did not open" error. Some servers (xrdp, lamco-rdp-server)
+    /// advertise ECHO and `FreeRDP` input dynamic channels that we decline, then send
+    /// data on them anyway; that PDU must be skipped, not end the session. Whether it
+    /// arrives before capture completes is a timing race, so the only robust handling
+    /// is to ignore it wherever it lands.
+    fn process_pdu(
+        &mut self,
+        action: ironrdp_pdu::Action,
+        payload: &[u8],
+    ) -> Result<Vec<ActiveStageOutput>> {
+        match self.active_stage.process(&mut self.image, action, payload) {
+            Ok(outputs) => Ok(outputs),
+            Err(e) if format!("{e:?}").contains("non existing DVC channel") => {
+                debug!(error = ?e, "Skipping data PDU for an unhandled DVC channel");
+                Ok(Vec::new())
+            }
+            Err(e) => Err(anyhow::anyhow!("process PDU: {e:?}")),
         }
     }
 
@@ -568,8 +591,7 @@ impl HeadlessSession {
                     let result = match frame {
                         Ok((action, payload)) => {
                             self.metrics.record_bytes_received(payload.len() as u64);
-                            self.active_stage.process(&mut self.image, action, &payload)
-                                .map_err(|e| anyhow::anyhow!("process PDU: {e:?}"))
+                            self.process_pdu(action, &payload)
                         }
                         Err(e) => {
                             debug!("Peer disconnected during wait_still: {e}");
@@ -883,8 +905,7 @@ impl HeadlessSession {
                     let result = match frame {
                         Ok((action, payload)) => {
                             self.metrics.record_bytes_received(payload.len() as u64);
-                            self.active_stage.process(&mut self.image, action, &payload)
-                                .map_err(|e| anyhow::anyhow!("process PDU: {e:?}"))
+                            self.process_pdu(action, &payload)
                         }
                         Err(e) => {
                             self.peer_disconnected = true;
@@ -921,8 +942,7 @@ impl HeadlessSession {
                     let result = match frame {
                         Ok((action, payload)) => {
                             self.metrics.record_bytes_received(payload.len() as u64);
-                            self.active_stage.process(&mut self.image, action, &payload)
-                                .map_err(|e| anyhow::anyhow!("process PDU: {e:?}"))
+                            self.process_pdu(action, &payload)
                         }
                         Err(e) => {
                             debug!("Peer disconnected: {e}");
@@ -1323,8 +1343,7 @@ impl HeadlessSession {
                     let result = match frame {
                         Ok((action, payload)) => {
                             self.metrics.record_bytes_received(payload.len() as u64);
-                            self.active_stage.process(&mut self.image, action, &payload)
-                                .map_err(|e| anyhow::anyhow!("process PDU: {e:?}"))
+                            self.process_pdu(action, &payload)
                         }
                         Err(e) => {
                             self.peer_disconnected = true;
@@ -1476,8 +1495,7 @@ impl HeadlessSession {
                     let result = match frame {
                         Ok((action, payload)) => {
                             self.metrics.record_bytes_received(payload.len() as u64);
-                            self.active_stage.process(&mut self.image, action, &payload)
-                                .map_err(|e| anyhow::anyhow!("process PDU: {e:?}"))
+                            self.process_pdu(action, &payload)
                         }
                         Err(e) => {
                             self.peer_disconnected = true;

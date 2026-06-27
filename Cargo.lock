@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "lamco-rdp-tools"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "chrono",

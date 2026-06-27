@@ -5,6 +5,25 @@ All notable changes to lamco-rdp-tools are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Versions tag the toolkit as a whole;
 both binaries (`rdpsee`, `rdpdo`) ship together.
 
+## [1.1.1] - 2026-06-26
+
+### Fixed
+
+- The session no longer aborts when a server opens a dynamic virtual channel we
+  decline (for example xrdp's `ECHO` and `FreeRDP::Advanced::Input`) and then
+  sends data on it. That PDU is skipped instead of ending the session, which
+  previously surfaced as `access to non existing DVC channel` and failed a
+  capture whenever the stray PDU arrived before the screen settled.
+- OpenH264 discovery now follows the operating system library search path, so an
+  `openh264.dll` installed in a system directory (System32 or on `PATH`) is found
+  without copying it next to the executable.
+- The library-load warning distinguishes a missing library from one that was
+  found but failed to load.
+- The initial-frame wait now counts EGFX decoded frames, not only legacy bitmap
+  updates. EGFX frames arrive on the graphics pipeline and increment a separate
+  counter, so against an AVC420 server the wait previously always timed out and
+  logged a spurious "No initial frame received".
+
 ## [1.1.0] - 2026-06-26
 
 Windows support.

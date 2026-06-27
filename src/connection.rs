@@ -563,43 +563,69 @@ const OPENH264_SEARCH_PATHS: &[&str] = &[];
 /// loaded through `try_load_h264`. Returns `None` when none is found, in which case
 /// AVC420 frames are skipped and other codecs still decode.
 fn load_h264_decoder() -> Option<Box<dyn H264Decoder>> {
-    if let Ok(path) = std::env::var("OPENH264_LIBRARY_PATH") {
-        return try_load_h264(&PathBuf::from(path));
-    }
-
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(dir) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-    {
-        candidates.push(dir.join(OPENH264_LIB_NAME));
+    if let Ok(path) = std::env::var("OPENH264_LIBRARY_PATH") {
+        candidates.push(PathBuf::from(path));
+    } else {
+        if let Some(dir) = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        {
+            candidates.push(dir.join(OPENH264_LIB_NAME));
+        }
+        candidates.extend(OPENH264_SEARCH_PATHS.iter().map(PathBuf::from));
     }
-    candidates.extend(OPENH264_SEARCH_PATHS.iter().map(PathBuf::from));
 
+    let mut found_but_failed = false;
     for path in &candidates {
-        if let Some(decoder) = try_load_h264(path) {
-            return Some(decoder);
+        match try_load_h264(path) {
+            LoadOutcome::Loaded(decoder) => return Some(decoder),
+            LoadOutcome::Failed => found_but_failed = true,
+            LoadOutcome::Missing => {}
         }
     }
 
-    warn!(
-        "H.264 decode unavailable: OpenH264 library not found (set OPENH264_LIBRARY_PATH to override)"
-    );
+    if found_but_failed {
+        warn!(
+            "H.264 decode unavailable: an OpenH264 library was found but failed to load (run with --verbose for the error)"
+        );
+    } else {
+        warn!(
+            "H.264 decode unavailable: OpenH264 library not found (place {OPENH264_LIB_NAME} next to the executable or set OPENH264_LIBRARY_PATH)"
+        );
+    }
     None
+}
+
+/// Outcome of attempting to load one `OpenH264` candidate path.
+enum LoadOutcome {
+    Loaded(Box<dyn H264Decoder>),
+    /// A library file was present but neither loader tier could use it.
+    Failed,
+    /// No usable library at this path.
+    Missing,
 }
 
 /// Load an H.264 decoder from one path, with a two-tier fallback: the upstream
 /// hash-verified Cisco loader first, then unchecked loading for distro-repackaged
-/// libraries. Returns `None` if the path does not exist or neither tier loads.
-fn try_load_h264(path: &Path) -> Option<Box<dyn H264Decoder>> {
-    if !path.exists() {
-        return None;
+/// libraries.
+fn try_load_h264(path: &Path) -> LoadOutcome {
+    // A directory-qualified path that does not exist cannot load, so skip it. A bare
+    // filename is left to the OS library search path (System32 and PATH on Windows,
+    // the loader cache on Linux), so it is attempted even when it is not present in
+    // the working directory.
+    let names_dir = path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty());
+    let file_present = path.exists();
+    if names_dir && !file_present {
+        return LoadOutcome::Missing;
     }
 
     match decode::OpenH264Decoder::from_library_path(path) {
         Ok(decoder) => {
             info!(path = %path.display(), "H.264 decode enabled (Cisco verified binary)");
-            return Some(Box::new(decoder));
+            return LoadOutcome::Loaded(Box::new(decoder));
         }
         Err(e) => {
             debug!(path = %path.display(), error = %e, "Hash-verified load failed, trying unchecked");
@@ -609,11 +635,15 @@ fn try_load_h264(path: &Path) -> Option<Box<dyn H264Decoder>> {
     match SystemH264Decoder::load(path) {
         Ok(decoder) => {
             info!(path = %path.display(), "H.264 decode enabled (system library)");
-            Some(Box::new(decoder))
+            LoadOutcome::Loaded(Box::new(decoder))
         }
         Err(e) => {
             debug!(path = %path.display(), error = %e, "System library load failed");
-            None
+            if file_present {
+                LoadOutcome::Failed
+            } else {
+                LoadOutcome::Missing
+            }
         }
     }
 }
