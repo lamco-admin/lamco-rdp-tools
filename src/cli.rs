@@ -54,6 +54,12 @@ pub(crate) struct Cli {
     #[arg(long, default_value_t = 30)]
     pub timeout: u64,
 
+    /// Seconds to wait for the first frame after connecting. Servers that
+    /// gate initial output on codec negotiation (e.g. a 5s EGFX gate before
+    /// falling back to bitmap replay) need more than a couple of seconds.
+    #[arg(long, default_value_t = 10.0)]
+    pub frame_wait: f64,
+
     /// Desktop width in pixels
     #[arg(long, default_value_t = 1920)]
     pub width: u16,

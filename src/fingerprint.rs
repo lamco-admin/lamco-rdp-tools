@@ -34,6 +34,15 @@ pub(crate) struct FingerprintReport {
     pub self_signed: bool,
     /// SHA-256 of the exact server certificate (instance identity).
     pub cert_sha256: String,
+    /// Negotiated TLS protocol version, e.g. `"TLSv1_3"`. `None` if the active
+    /// TLS backend cannot report it. Informational only: not folded into the
+    /// fingerprint hash, so existing fingerprints are unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_version: Option<String>,
+    /// Negotiated cipher suite, e.g. `"TLS13_AES_256_GCM_SHA384"`. `None` if
+    /// the active TLS backend cannot report it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cipher_suite: Option<String>,
 }
 
 impl FingerprintReport {
@@ -60,6 +69,12 @@ impl FingerprintReport {
             if self.self_signed { "yes" } else { "no" }
         );
         println!("cert sha256:  {}", self.cert_sha256);
+        if let Some(version) = &self.tls_version {
+            println!("tls version:  {version}");
+        }
+        if let Some(suite) = &self.tls_cipher_suite {
+            println!("tls cipher:   {suite}");
+        }
     }
 }
 
@@ -118,6 +133,8 @@ pub(crate) async fn fingerprint(
         signature_algorithm: oid_name(&signature_oid),
         self_signed,
         cert_sha256,
+        tls_version: handshake.negotiated.version.clone(),
+        tls_cipher_suite: handshake.negotiated.cipher_suite.clone(),
     })
 }
 

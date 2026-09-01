@@ -227,8 +227,8 @@ pub(crate) fn rms_amplitude(pcm_data: &[u8]) -> f64 {
     let sample_count = pcm_data.len() / 2;
     let mut sum_sq: f64 = 0.0;
 
-    for chunk in pcm_data.chunks_exact(2) {
-        let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+    for chunk in pcm_data.as_chunks::<2>().0 {
+        let sample = i16::from_le_bytes(*chunk);
         let normalized = f64::from(sample) / f64::from(i16::MAX);
         sum_sq += normalized * normalized;
     }
@@ -240,12 +240,16 @@ pub(crate) fn rms_amplitude(pcm_data: &[u8]) -> f64 {
 /// Both must be 16-bit PCM. Returns a similarity score 0.0-1.0.
 pub(crate) fn compare_audio(a: &[u8], b: &[u8]) -> f64 {
     let samples_a: Vec<f64> = a
-        .chunks_exact(2)
-        .map(|c| f64::from(i16::from_le_bytes([c[0], c[1]])))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f64::from(i16::from_le_bytes(*c)))
         .collect();
     let samples_b: Vec<f64> = b
-        .chunks_exact(2)
-        .map(|c| f64::from(i16::from_le_bytes([c[0], c[1]])))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| f64::from(i16::from_le_bytes(*c)))
         .collect();
 
     if samples_a.is_empty() || samples_b.is_empty() {

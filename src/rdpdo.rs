@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Result, bail};
 use clap::Parser;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     audio, calibrate, capture, cli,
@@ -116,9 +116,13 @@ async fn run(cli: &Cli) -> Result<()> {
     }
 
     // Wait for initial frame before executing commands
-    let got_frame = session.wait_for_frame(Duration::from_secs(2)).await?;
+    let frame_wait = Duration::from_secs_f64(cli.frame_wait.max(0.0));
+    let got_frame = session.wait_for_frame(frame_wait).await?;
     if !got_frame {
-        info!("No initial frame received within 2s, proceeding anyway");
+        warn!(
+            "No initial frame received within {:.1}s; proceeding, but captures will fail rather than save a blank framebuffer (adjust with --frame-wait)",
+            frame_wait.as_secs_f64()
+        );
     }
 
     // Set up recorder if --record was specified
@@ -410,6 +414,15 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
             session.run_for(Duration::from_millis(millis)).await?;
         }
         Command::Capture(path, region) => {
+            // A capture with zero frames received is just the initial blank
+            // framebuffer; saving it silently poisons downstream comparisons.
+            if session.frame_count() == 0 {
+                bail!(
+                    "capture refused: no frames received from server yet; \
+                     the framebuffer is blank (wait longer with --frame-wait \
+                     or check the server's video pipeline)"
+                );
+            }
             capture::save_capture(session, path, region.as_deref())?;
         }
         Command::TypePassword(source) => {
@@ -1940,16 +1953,8 @@ fn record_command(rec: &mut recorder::SessionRecorder, cmd: &Command) -> Result<
         Command::Rcapture { region, path } => rec.record("rcapture", &[region, path]),
         Command::Run(script) => rec.record("run", &[script.as_str()]),
         Command::AcceptPortal { compositor, .. } => rec.record("accept-portal", &[compositor]),
-        Command::Unlock {
-            compositor,
-            password: _,
-            ..
-        } => rec.record("unlock", &[compositor, "***"]),
-        Command::Login {
-            username,
-            password: _,
-            ..
-        } => rec.record("login", &[username, "***"]),
+        Command::Unlock { compositor, .. } => rec.record("unlock", &[compositor, "***"]),
+        Command::Login { username, .. } => rec.record("login", &[username, "***"]),
         Command::BootSequence(script) => rec.record("boot-sequence", &[script.as_str()]),
         Command::Pixel(pos) => rec.record("pixel", &[pos]),
         Command::Checksum(region) => rec.record("checksum", &[region]),
@@ -2358,7 +2363,8 @@ async fn run_repl_interactive(
                                 let _ = old.shutdown().await;
 
                                 // Wait for initial frame
-                                let _ = session.wait_for_frame(Duration::from_secs(2)).await;
+                                let wait = Duration::from_secs_f64(cli.frame_wait.max(0.0));
+                                let _ = session.wait_for_frame(wait).await;
                                 eprintln!("Reconnected.");
                             }
                             Err(e) => {

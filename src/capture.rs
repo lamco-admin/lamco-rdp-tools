@@ -43,7 +43,31 @@ pub(crate) fn save_capture(
         stdout.flush().context("flush stdout")?;
     } else {
         session.save_screenshot(Path::new(path))?;
+        warn_if_uniform(session, path);
     }
 
     Ok(())
+}
+
+/// Warn when a saved capture is one flat colour.
+///
+/// Frames can arrive and still carry nothing: a compositor whose screen has
+/// blanked sends real, well-formed, entirely black frames. That passes a
+/// frame-count check and produces a file a test will happily compare against,
+/// so say so on stderr. It is a warning rather than an error because a
+/// legitimately uniform screen exists.
+fn warn_if_uniform(session: &HeadlessSession, path: &str) {
+    let frame = session.current_frame();
+    let mut pixels = frame.pixels();
+    let Some(first) = pixels.next() else {
+        return;
+    };
+    if pixels.all(|p| p == first) {
+        let [r, g, b, _] = first.0;
+        tracing::warn!(
+            "capture {path} is a single colour (#{r:02x}{g:02x}{b:02x}) across {}x{}: the remote screen may be blanked",
+            frame.width(),
+            frame.height()
+        );
+    }
 }

@@ -5,10 +5,10 @@
 //! `ironrdp_tls::upgrade` already returns a parsed `x509_cert::Certificate`, so
 //! the certificate fields come straight off that with no extra parsing crate.
 //!
-//! The negotiated TLS version and cipher suite are intentionally absent: the
-//! published `ironrdp-tls` API does not surface them. Tracked upstream by
-//! Devolutions/IronRDP PR #1384 (adds a backend-neutral `negotiated()`
-//! accessor); they will be added here once it lands in a release.
+//! The negotiated TLS version and cipher suite come from `ironrdp_tls::negotiated()`
+//! (Devolutions/IronRDP PR #1384, `ironrdp-tls` 0.2.2). Both fields are `None` unless
+//! the active TLS backend can introspect them; the `rustls` backend this crate uses
+//! reports both.
 
 use std::{fmt::Write as _, time::Duration};
 
@@ -40,6 +40,14 @@ pub(crate) struct CertReport {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub subject_alt_names: Vec<String>,
     pub sha256_fingerprint: String,
+    /// Negotiated TLS protocol version, e.g. `"TLSv1_3"`. `None` if the active
+    /// TLS backend cannot report it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_version: Option<String>,
+    /// Negotiated cipher suite, e.g. `"TLS13_AES_256_GCM_SHA384"`. `None` if
+    /// the active TLS backend cannot report it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_cipher_suite: Option<String>,
 }
 
 impl CertReport {
@@ -60,6 +68,12 @@ impl CertReport {
             println!("subject alt:  {}", self.subject_alt_names.join(", "));
         }
         println!("sha256:       {}", self.sha256_fingerprint);
+        if let Some(version) = &self.tls_version {
+            println!("tls version:  {version}");
+        }
+        if let Some(suite) = &self.tls_cipher_suite {
+            println!("tls cipher:   {suite}");
+        }
     }
 }
 
@@ -69,6 +83,7 @@ pub(crate) struct TlsHandshake {
     pub protocol: SecurityProtocol,
     pub flags: ResponseFlags,
     pub certificate: Certificate,
+    pub negotiated: ironrdp_tls::NegotiatedTls,
 }
 
 /// Negotiate an enhanced-security protocol and complete the TLS handshake,
@@ -100,24 +115,34 @@ pub(crate) async fn connect_tls(dest: &Destination, timeout: Duration) -> Result
     };
 
     // The TLS handshake follows the negotiation on the same stream.
-    let (_tls_stream, certificate) = ironrdp_tls::upgrade(stream, &dest.name)
+    let (tls_stream, certificate) = ironrdp_tls::upgrade(stream, &dest.name)
         .await
         .map_err(|e| anyhow::anyhow!("TLS upgrade: {e}"))?;
+    let negotiated = ironrdp_tls::negotiated(&tls_stream);
 
     Ok(TlsHandshake {
         protocol,
         flags,
         certificate,
+        negotiated,
     })
 }
 
 /// Negotiate TLS and report the server certificate (the `cert` verb).
 pub(crate) async fn fetch_cert(dest: &Destination, timeout: Duration) -> Result<CertReport> {
     let handshake = connect_tls(dest, timeout).await?;
-    build_report(dest.addr_string(), &handshake.certificate)
+    build_report(
+        dest.addr_string(),
+        &handshake.certificate,
+        &handshake.negotiated,
+    )
 }
 
-fn build_report(server: String, cert: &Certificate) -> Result<CertReport> {
+fn build_report(
+    server: String,
+    cert: &Certificate,
+    negotiated: &ironrdp_tls::NegotiatedTls,
+) -> Result<CertReport> {
     let tbs = &cert.tbs_certificate;
     let subject = tbs.subject.to_string();
     let issuer = tbs.issuer.to_string();
@@ -137,6 +162,8 @@ fn build_report(server: String, cert: &Certificate) -> Result<CertReport> {
         public_key: oid_name(&tbs.subject_public_key_info.algorithm.oid.to_string()),
         subject_alt_names: subject_alt_names(tbs),
         sha256_fingerprint: hex_lower(&Sha256::digest(&der)),
+        tls_version: negotiated.version.clone(),
+        tls_cipher_suite: negotiated.cipher_suite.clone(),
     })
 }
 

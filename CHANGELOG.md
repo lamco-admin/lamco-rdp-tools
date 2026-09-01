@@ -5,6 +5,31 @@ All notable changes to lamco-rdp-tools are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Versions tag the toolkit as a whole;
 both binaries (`rdpsee`, `rdpdo`) ship together.
 
+## [1.1.2] - 2026-08-31
+
+### Added
+
+- `rdpsee cert` and `rdpsee id` now report the negotiated TLS protocol version
+  and cipher suite (e.g. `TLSv1_3` / `TLS13_AES_256_GCM_SHA384`), sourced from
+  `ironrdp_tls::negotiated()` (Devolutions/IronRDP PR #1384, shipped in
+  `ironrdp-tls` 0.2.2). `None`/omitted when the active TLS backend can't
+  report it. Informational only on `id`: not folded into the fingerprint
+  hash, so existing fingerprints are unaffected by this release.
+
+### Fixed
+
+- `rdpdo capture` no longer accepts a blank first frame: it waits longer for
+  the first real frame and refuses (rather than silently saving) a capture
+  that never received one.
+- `rdpdo capture` now warns when a capture is a single flat colour, since
+  that usually means the screen hadn't finished rendering.
+
+### Changed
+
+- Cleared five clippy pedantic findings the current toolchain (1.98) added
+  (`unneeded_wildcard_pattern`, `chunks_exact_to_as_chunks`) with no
+  behavior change.
+
 ## [1.1.1] - 2026-06-26
 
 ### Fixed

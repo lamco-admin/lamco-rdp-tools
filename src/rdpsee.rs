@@ -147,10 +147,9 @@ static COMMANDS: &[CommandDoc] = &[
                 status, validity window (not-before / not-after), serial number, signature \
                 and public-key algorithms (common OIDs mapped to names such as SHA256-RSA or \
                 ECDSA, otherwise the dotted OID), subject alternative names, and the SHA-256 \
-                fingerprint of the certificate DER. Fails if the server offers only standard \
-                RDP security, since there is no TLS to inspect. The negotiated TLS version \
-                and cipher suite are not yet shown: the published ironrdp-tls API does not \
-                surface them, pending Devolutions/IronRDP PR #1384.",
+                fingerprint of the certificate DER, and the negotiated TLS version and cipher \
+                suite when the active TLS backend can report them. Fails if the server offers \
+                only standard RDP security, since there is no TLS to inspect.",
     },
     CommandDoc {
         name: "id",
@@ -175,7 +174,9 @@ static COMMANDS: &[CommandDoc] = &[
                 <hash>: 16 hex chars, a truncated SHA-256 over the raw protocol bits and \
                 certificate algorithm OIDs (independent of name formatting). Also reports \
                 the selected security protocol, NLA-required, EGFX-capable, public-key and \
-                signature algorithms, and self-signed status.",
+                signature algorithms, self-signed status, and the negotiated TLS version and \
+                cipher suite when the active TLS backend can report them (informational only, \
+                not folded into the fingerprint hash).",
     },
     CommandDoc {
         name: "shot",
