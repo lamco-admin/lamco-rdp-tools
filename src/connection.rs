@@ -10,25 +10,24 @@ use std::{
 
 use anyhow::{Context, Result};
 use ironrdp_cliprdr::CliprdrClient;
-use ironrdp_connector::{
-    self as connector, ConnectionResult, Credentials, DesktopSize,
-    legacy::{decode_send_data_indication, decode_share_control},
-};
+use ironrdp_connector::{self as connector, ConnectionResult, Credentials, DesktopSize};
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::DrdynvcClient;
-use ironrdp_egfx::decode::{self, DecodedFrame, DecoderError, DecoderResult, H264Decoder};
+use ironrdp_egfx::decode::{DecodedFrame, DecoderError, DecoderResult, H264Decoder};
 use ironrdp_pdu::{
+    mcs::decode_send_data_indication,
     nego::{ConnectionConfirm, SecurityProtocol},
     rdp::{
         capability_sets::{
             CapabilitySet, CodecProperty, MajorPlatformType, client_codecs_capabilities,
         },
         client_info::{CompressionType, PerformanceFlags, TimezoneInfo},
-        headers::ShareControlPdu,
+        headers::{ShareControlPdu, decode_share_control},
     },
     x224::X224,
 };
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
+use openh264::formats::YUVSource as _;
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
@@ -622,7 +621,7 @@ fn try_load_h264(path: &Path) -> LoadOutcome {
         return LoadOutcome::Missing;
     }
 
-    match decode::OpenH264Decoder::from_library_path(path) {
+    match Bt709H264Decoder::load_verified(path) {
         Ok(decoder) => {
             info!(path = %path.display(), "H.264 decode enabled (Cisco verified binary)");
             return LoadOutcome::Loaded(Box::new(decoder));
@@ -632,7 +631,7 @@ fn try_load_h264(path: &Path) -> LoadOutcome {
         }
     }
 
-    match SystemH264Decoder::load(path) {
+    match Bt709H264Decoder::load_unchecked(path) {
         Ok(decoder) => {
             info!(path = %path.display(), "H.264 decode enabled (system library)");
             LoadOutcome::Loaded(Box::new(decoder))
@@ -648,30 +647,43 @@ fn try_load_h264(path: &Path) -> LoadOutcome {
     }
 }
 
-/// H.264 decoder using the system `OpenH264` library without hash verification.
+/// H.264 decoder that converts to RGB the way MS-RDPEGFX 3.3.8.3.1 requires.
 ///
-/// The upstream `OpenH264Decoder` requires Cisco's exact binary (SHA256-verified).
-/// Distro-packaged libopenh264 (Debian, Fedora) may be stripped or patched,
-/// changing the hash. This wrapper bypasses hash verification for those cases.
-struct SystemH264Decoder {
+/// AVC420 carries full-range BT.709, but `openh264`'s `write_rgba8` assumes
+/// limited-range BT.601, which shifted every capture (green about 16 low on a
+/// blue desktop) and skewed pixel assertions. The upstream `OpenH264Decoder` in
+/// `ironrdp-egfx` 0.3.0 has the same fault; `IronRDP` #1923 fixes it but is in no
+/// release yet, so both loader tiers use this decoder until one is.
+struct Bt709H264Decoder {
     decoder: openh264::decoder::Decoder,
     annex_b_buf: Vec<u8>,
 }
 
-impl SystemH264Decoder {
+impl Bt709H264Decoder {
+    /// Load Cisco's binary, verified against its published SHA256 hashes.
+    fn load_verified(library_path: &Path) -> Result<Self> {
+        let api = openh264::OpenH264API::from_blob_path(library_path)
+            .map_err(|e| anyhow::anyhow!("failed to load OpenH264: {e}"))?;
+        Self::with_api(api)
+    }
+
     /// # Safety rationale
     ///
     /// `from_blob_path_unchecked` loads the shared library without SHA256
-    /// verification against known Cisco binaries. We trust system-installed
-    /// libopenh264 (Debian, Fedora packages distribute Cisco's binary).
+    /// verification against known Cisco binaries. Distro-packaged libopenh264
+    /// (Debian, Fedora) may be stripped or patched, changing the hash; we trust
+    /// system-installed copies.
     #[expect(
         unsafe_code,
         reason = "from_blob_path_unchecked skips hash check for distro libraries"
     )]
-    fn load(library_path: &Path) -> Result<Self> {
+    fn load_unchecked(library_path: &Path) -> Result<Self> {
         let api = unsafe { openh264::OpenH264API::from_blob_path_unchecked(library_path) }
             .map_err(|e| anyhow::anyhow!("failed to load OpenH264: {e}"))?;
+        Self::with_api(api)
+    }
 
+    fn with_api(api: openh264::OpenH264API) -> Result<Self> {
         let decoder = openh264::decoder::Decoder::with_api_config(
             api,
             openh264::decoder::DecoderConfig::default(),
@@ -711,7 +723,7 @@ impl SystemH264Decoder {
     }
 }
 
-impl H264Decoder for SystemH264Decoder {
+impl H264Decoder for Bt709H264Decoder {
     fn decode(&mut self, data: &[u8]) -> DecoderResult<DecodedFrame> {
         // Split AVC-format NAL units and decode each individually.
         // OpenH264 may need separate calls: SPS/PPS configure the decoder
@@ -740,20 +752,50 @@ impl H264Decoder for SystemH264Decoder {
             .ok_or_else(|| DecoderError::msg("OpenH264 returned no picture"))?;
 
         let (width, height) = openh264::formats::YUVSource::dimensions(&yuv);
+        let (y_stride, u_stride, v_stride) = openh264::formats::YUVSource::strides(&yuv);
+        #[expect(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            reason = "H.264 frame dimensions and plane strides fit in u32"
+        )]
+        let [w32, h32, y_stride, u_stride, v_stride] = [
+            width as u32,
+            height as u32,
+            y_stride as u32,
+            u_stride as u32,
+            v_stride as u32,
+        ];
 
+        let rgba_stride = w32
+            .checked_mul(4)
+            .ok_or_else(|| DecoderError::msg("frame dimensions overflow"))?;
         let rgba_size = width
             .checked_mul(height)
             .and_then(|s| s.checked_mul(4))
             .ok_or_else(|| DecoderError::msg("frame dimensions overflow"))?;
         let mut rgba = vec![0u8; rgba_size];
-        yuv.write_rgba8(&mut rgba);
 
-        #[expect(
-            clippy::as_conversions,
-            clippy::cast_possible_truncation,
-            reason = "H.264 frame dimensions fit in u32"
-        )]
-        Ok(DecodedFrame::new(rgba, width as u32, height as u32))
+        // Real plane strides: openh264 pads planes to the macroblock grid.
+        let planar = yuv::YuvPlanarImage {
+            y_plane: yuv.y(),
+            y_stride,
+            u_plane: yuv.u(),
+            u_stride,
+            v_plane: yuv.v(),
+            v_stride,
+            width: w32,
+            height: h32,
+        };
+        yuv::yuv420_to_rgba(
+            &planar,
+            &mut rgba,
+            rgba_stride,
+            yuv::YuvRange::Full,
+            yuv::YuvStandardMatrix::Bt709,
+        )
+        .map_err(|e| DecoderError::new("failed to convert YUV420 to RGBA", e))?;
+
+        Ok(DecodedFrame::new(rgba, w32, h32))
     }
 
     fn reset(&mut self) {

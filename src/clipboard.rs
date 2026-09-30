@@ -136,6 +136,8 @@ impl CliprdrBackend for ClipboardBackend {
         );
         let mut state = self.state.lock().expect("clipboard lock");
         state.remote_formats = available_formats.to_vec();
+        // The server now owns the clipboard; our earlier copy is gone.
+        state.pending_send = None;
 
         // Detect if the remote is offering files (FileGroupDescriptorW format)
         state.remote_file_list_format_id = available_formats.iter().find_map(|f| {
@@ -262,4 +264,20 @@ impl CliprdrBackend for ClipboardBackend {
     fn on_lock(&mut self, _data_id: LockDataId) {}
 
     fn on_unlock(&mut self, _data_id: LockDataId) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_copy_ends_our_ownership() {
+        let mut backend = ClipboardBackend::new();
+        let state = backend.state();
+        state.lock().expect("clipboard lock").pending_send = Some("ours".to_owned());
+
+        backend.on_remote_copy(&[ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)]);
+
+        assert!(state.lock().expect("clipboard lock").pending_send.is_none());
+    }
 }

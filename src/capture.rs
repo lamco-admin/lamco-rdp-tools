@@ -18,7 +18,7 @@ pub(crate) fn save_capture(
 
     if let Some(region_spec) = region {
         let (rx, ry, rw, rh) = coords::resolve_region(region_spec, width, height)?;
-        let sub_image = session.capture_region(rx, ry, rw, rh);
+        let sub_image = session.capture_region(rx, ry, rw, rh)?;
 
         if path == "-" {
             let mut stdout = std::io::stdout().lock();

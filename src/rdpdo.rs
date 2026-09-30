@@ -1261,26 +1261,50 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
         }
         Command::Monitor(action) => match action {
             cli::MonitorAction::List => {
-                let (width, height) = session.image_dimensions();
-                let json = serde_json::json!({
-                    "monitors": [{
+                let requested = session.monitor_layout();
+                let monitors = if requested.is_empty() {
+                    // No explicit layout requested this session: single implicit
+                    // primary monitor matching the current composited frame.
+                    let (width, height) = session.image_dimensions();
+                    vec![serde_json::json!({
                         "id": 1,
                         "primary": true,
+                        "left": 0,
+                        "top": 0,
                         "width": width,
                         "height": height,
-                    }]
-                });
+                    })]
+                } else {
+                    let mut left = 0u32;
+                    requested
+                        .iter()
+                        .enumerate()
+                        .map(|(index, &(width, height))| {
+                            let entry = serde_json::json!({
+                                "id": index + 1,
+                                "primary": index == 0,
+                                "left": left,
+                                "top": 0,
+                                "width": width,
+                                "height": height,
+                            });
+                            left += width;
+                            entry
+                        })
+                        .collect()
+                };
+                let json = serde_json::json!({ "monitors": monitors });
                 println!("{}", serde_json::to_string_pretty(&json)?);
             }
-            cli::MonitorAction::Set { width, height } => {
-                info!(width, height, "Setting monitor layout");
-                let sent = session.send_resize(*width, *height).await?;
+            cli::MonitorAction::Set { monitors } => {
+                info!(count = monitors.len(), ?monitors, "Setting monitor layout");
+                let sent = session.send_monitor_layout(monitors).await?;
                 if sent {
                     session.run_for(Duration::from_secs(2)).await?;
                     let (new_w, new_h) = session.image_dimensions();
-                    info!(new_w, new_h, "Monitor resized");
+                    info!(new_w, new_h, "Monitor layout applied");
                 } else {
-                    eprintln!("warning: DisplayControl not available, resize skipped");
+                    eprintln!("warning: DisplayControl not available, monitor layout skipped");
                 }
             }
         },
@@ -1620,15 +1644,17 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
             destination,
             command,
         } => {
-            let status = tokio::process::Command::new("ssh")
+            let ssh = tokio::process::Command::new("ssh")
                 .arg("-o")
                 .arg("BatchMode=yes")
                 .arg("-o")
                 .arg("StrictHostKeyChecking=accept-new")
                 .arg(destination)
                 .arg(command)
-                .status()
-                .await
+                .status();
+            let status = session
+                .run_while(ssh)
+                .await?
                 .map_err(|e| anyhow::anyhow!("ssh exec: {e}"))?;
             if !status.success() {
                 bail!("exec: ssh exited with code {}", status.code().unwrap_or(-1));
@@ -1987,8 +2013,12 @@ fn record_command(rec: &mut recorder::SessionRecorder, cmd: &Command) -> Result<
         Command::BaselineList { .. } => rec.record("baseline", &["list"]),
         Command::BaselineCheck { name, .. } => rec.record("baseline", &["check", name]),
         Command::Monitor(cli::MonitorAction::List) => rec.record("monitor", &["list"]),
-        Command::Monitor(cli::MonitorAction::Set { width, height }) => {
-            let dims = format!("{width}x{height}");
+        Command::Monitor(cli::MonitorAction::Set { monitors }) => {
+            let dims = monitors
+                .iter()
+                .map(|(w, h)| format!("{w}x{h}"))
+                .collect::<Vec<_>>()
+                .join("+");
             rec.record("monitor", &["set", &dims])
         }
         Command::Calibrate { grid, .. } => rec.record("calibrate", &[grid]),

@@ -5,6 +5,55 @@ All notable changes to lamco-rdp-tools are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Versions tag the toolkit as a whole;
 both binaries (`rdpsee`, `rdpdo`) ship together.
 
+## [1.2.0] - 2026-09-29
+
+### Added
+
+- `rdpdo monitor set` now accepts a `WIDTHxHEIGHT[+WIDTHxHEIGHT...]` layout
+  instead of a single primary monitor: each additional entry is tiled
+  immediately to the right of the previous one (index 0 stays primary at
+  (0,0)), sent as a proper N-entry `DisplayControl` `MonitorLayout` PDU.
+  `monitor list` reports the layout actually requested this session
+  (left/top/width/height per monitor) instead of a hardcoded single-monitor
+  stub. Built to validate the server's new multi-monitor EGFX surfaces
+  (`lamco-rdp-server` `c4b73fdc6`/`44143b649`); `capture <path> LEFT,TOP,W,H`
+  is the existing mechanism for grabbing one monitor's region.
+
+### Fixed
+
+- `rdpdo` decodes AVC420 as full-range BT.709, as MS-RDPEGFX 3.3.8.3.1
+  requires. Both decoder tiers used openh264's `write_rgba8`, which assumes
+  limited-range BT.601, so captures of H.264 sessions came back with green
+  about 16 low against the server's own screen and skewed `assert-pixel`,
+  `find-color` and `checksum` baselines. The frame now converts through
+  `yuv420_to_rgba` with the real plane strides (upstream fix: IronRDP #1923,
+  not yet in a published `ironrdp-egfx`). Measured against a QMP screendump of
+  the same frame: mean RGB (0.6, 66.2, 209.8) vs (1.0, 66.2, 210.1).
+- `rdpdo audio-capture` no longer fails with "no wave packets arrived". The
+  format lookup read a table that was never filled, and the wave format index
+  cannot be resolved from outside `ironrdp-rdpsnd`, so the captured PCM format
+  is now identified from the observed data rate. The WAV is written with the
+  correct 16-bit / stereo / 44100 Hz header.
+- `rdpdo exec` keeps answering the RDP server while the remote command runs.
+  A server that fetches clipboard data only when an app pastes asks for it
+  in the middle of `exec ... wl-paste`; rdpdo used to stop reading the
+  connection during `exec`, so the paste and the `exec` waited on each other.
+- `rdpdo set-clipboard` text is served for every paste until the server
+  announces a copy of its own. Previously only the first request got the
+  text and later pastes of the same copy got an error response.
+- `rdpdo capture <path> <region>` no longer panics with an out-of-bounds
+  slice when the desktop has resized between computing the region and
+  capturing it (a real race, not just a multi-monitor edge case — any
+  mid-session resize could trigger it). It now returns a clear error instead.
+
+### Changed
+
+- IronRDP crates move to the current release wave together (connector 0.10,
+  session 0.11, pdu 0.9, cliprdr 0.7, dvc 0.8, egfx 0.3, graphics 0.9,
+  rdpsnd 0.9, input 0.7, displaycontrol 0.8, svc 0.8, tls 0.2.2). Session
+  reactivation now follows the `ironrdp-session` 0.11 ownership model. No
+  command-line change.
+
 ## [1.1.2] - 2026-08-31
 
 ### Added

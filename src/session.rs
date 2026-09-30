@@ -16,11 +16,22 @@ use ironrdp_cliprdr::{
         FormatDataResponse, PackedFileList,
     },
 };
-use ironrdp_connector::connection_activation::ConnectionActivationState;
+use ironrdp_connector::{
+    ConnectionResult,
+    connection_activation::{ConnectionActivationFactory, ConnectionActivationState},
+};
 use ironrdp_core::{IntoOwned, WriteBuf};
+use ironrdp_displaycontrol::{
+    client::DisplayControlClient,
+    pdu::{DisplayControlMonitorLayout, DisplayControlPdu, MonitorLayoutEntry},
+};
+use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
-use ironrdp_session::{ActiveStage, ActiveStageOutput, fast_path, image::DecodedImage};
+use ironrdp_session::{
+    ActiveStage, ActiveStageBuilder, ActiveStageOutput, fast_path, image::DecodedImage,
+};
+use ironrdp_svc::ChannelFlags;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
 use tracing::{debug, info, trace, warn};
 
@@ -53,6 +64,16 @@ pub(crate) struct HeadlessSession {
     server_addr: String,
     /// Calibration correction offsets applied to mouse coordinates
     calibration_offset: Option<(f64, f64)>,
+    /// Last monitor layout successfully sent via `send_monitor_layout`, as
+    /// (width, height) pairs in left-to-right order (index 0 is primary).
+    /// Empty until `monitor set` is used at least once this session.
+    monitor_layout: Vec<(u32, u32)>,
+    /// Produces a fresh `ConnectionActivationSequence` for driving the
+    /// Deactivation-Reactivation Sequence (MS-RDPBCGR 1.3.1.3). ironrdp-session
+    /// 0.11 dropped its ironrdp-connector dependency (PR #1435): `DeactivateAll`
+    /// is now a bare signal and each consumer owns and drives its own sequence
+    /// via this factory, instead of the crate handing one back.
+    activation_factory: ConnectionActivationFactory,
 }
 
 struct SessionMetrics {
@@ -184,7 +205,31 @@ impl HeadlessSession {
             connection_result.desktop_size.height,
         );
 
-        let active_stage = ActiveStage::new(connection_result);
+        let ConnectionResult {
+            io_channel_id,
+            user_channel_id,
+            message_channel_id,
+            share_id,
+            static_channels,
+            enable_server_pointer,
+            pointer_software_rendering,
+            activation_factory,
+            compression_type,
+            // desktop_size already consumed above.
+            desktop_size: _,
+        } = connection_result;
+
+        let active_stage = ActiveStageBuilder {
+            static_channels,
+            user_channel_id,
+            io_channel_id,
+            message_channel_id,
+            share_id,
+            compression_type,
+            enable_server_pointer,
+            pointer_software_rendering,
+        }
+        .build();
         let (reader, writer) = split_tokio_framed(framed);
 
         Self {
@@ -205,6 +250,8 @@ impl HeadlessSession {
             peer_disconnected: false,
             server_addr: String::new(),
             calibration_offset: None,
+            monitor_layout: Vec::new(),
+            activation_factory,
         }
     }
 
@@ -269,6 +316,38 @@ impl HeadlessSession {
         }
 
         Ok(())
+    }
+
+    /// Await `work` while still reading and answering server PDUs.
+    ///
+    /// A server that fetches clipboard data only when a remote app pastes
+    /// sends its Format Data Request while that paste is in progress. If the
+    /// paste is driven by `work` (an `exec` of `wl-paste` on the VM), nobody
+    /// would read the request and both sides would wait on each other.
+    pub(crate) async fn run_while<T>(&mut self, work: impl Future<Output = T>) -> Result<T> {
+        let mut work = std::pin::pin!(work);
+
+        while !self.peer_disconnected {
+            tokio::select! {
+                output = &mut work => return Ok(output),
+                frame = self.reader.read_pdu() => {
+                    let result = match frame {
+                        Ok((action, payload)) => {
+                            self.metrics.record_bytes_received(payload.len() as u64);
+                            self.process_pdu(action, &payload)
+                        }
+                        Err(e) => {
+                            info!(frames = self.metrics.graphics_updates, "Peer disconnected: {e}");
+                            self.peer_disconnected = true;
+                            break;
+                        }
+                    };
+                    self.dispatch_outputs(result?).await?;
+                }
+            }
+        }
+
+        Ok(work.await)
     }
 
     /// Process incoming frames until at least one graphics update arrives, or timeout.
@@ -351,16 +430,24 @@ impl HeadlessSession {
                     info!(?reason, "Server terminated session");
                     return Ok(());
                 }
-                ActiveStageOutput::DeactivateAll(mut connection_activation) => {
+                ActiveStageOutput::DeactivateAll => {
                     // MS-RDPBCGR 1.3.1.3: Deactivation-Reactivation Sequence
                     // Server sends Deactivate All (e.g. after resize), then
                     // re-runs the activation exchange to establish new params.
+                    //
+                    // ironrdp-session 0.11 (PR #1435) made DeactivateAll a bare
+                    // signal instead of handing back the connector-owned
+                    // sequence: we own and drive our own, produced fresh each
+                    // time by the factory captured at connect time.
                     debug!("Server sent Deactivate All, running reactivation sequence");
+                    let mut connection_activation = self.activation_factory.create();
+                    let io_channel_id = self.activation_factory.io_channel_id();
+                    let user_channel_id = self.activation_factory.user_channel_id();
                     let mut buf = WriteBuf::new();
                     loop {
                         let written = single_sequence_step_read(
                             &mut self.reader,
-                            &mut *connection_activation,
+                            &mut connection_activation,
                             &mut buf,
                         )
                         .await
@@ -374,8 +461,6 @@ impl HeadlessSession {
                         }
 
                         if let ConnectionActivationState::Finalized {
-                            io_channel_id,
-                            user_channel_id,
                             desktop_size,
                             enable_server_pointer,
                             pointer_software_rendering,
@@ -465,9 +550,32 @@ impl HeadlessSession {
     }
 
     /// Extract a sub-region from the framebuffer as an RGBA image.
-    pub(crate) fn capture_region(&self, x: u16, y: u16, w: u16, h: u16) -> image::RgbaImage {
+    ///
+    /// The region is validated against the *current* frame size, not the
+    /// dimensions used to compute `x`/`y`/`w`/`h` (typically `image_dimensions()`,
+    /// which reflects the connect-time desktop size and is not updated on later
+    /// resizes or `monitor set`). A resize between computing the region and
+    /// capturing it is a real, reachable race — fail with a clear error instead
+    /// of an out-of-bounds slice panic.
+    pub(crate) fn capture_region(
+        &self,
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+    ) -> Result<image::RgbaImage> {
         let frame = self.current_frame();
         let full_width = frame.width() as usize;
+        let full_height = frame.height() as usize;
+        if usize::from(x) + usize::from(w) > full_width
+            || usize::from(y) + usize::from(h) > full_height
+        {
+            bail!(
+                "capture region {x},{y},{w}x{h} exceeds the current frame size \
+                 {full_width}x{full_height} (the desktop resized since this region \
+                 was computed; re-run `monitor list` or capture without a region first)"
+            );
+        }
         let data = frame.as_raw();
         let stride = full_width * 4;
 
@@ -492,7 +600,7 @@ impl HeadlessSession {
             }
         }
 
-        region
+        Ok(region)
     }
 
     pub(crate) fn image_dimensions(&self) -> (u16, u16) {
@@ -663,6 +771,72 @@ impl HeadlessSession {
 
         info!(width, height, "Resize PDU sent");
         Ok(true)
+    }
+
+    /// Send a `DisplayControl` `MonitorLayout` PDU describing `monitors.len()`
+    /// horizontally-tiled monitors (left to right, index 0 primary at (0,0)).
+    ///
+    /// `encode_resize` (upstream `ActiveStage`) only builds a single-primary-monitor
+    /// layout, so this goes around it: fetch the `DisplayControlClient`'s channel id
+    /// directly and hand-encode a `DisplayControlMonitorLayout` with N entries via
+    /// the same `ActiveStage::encode_dvc_messages` framing `encode_resize` itself uses.
+    pub(crate) async fn send_monitor_layout(&mut self, monitors: &[(u32, u32)]) -> Result<bool> {
+        if monitors.is_empty() {
+            bail!("monitor layout requires at least one monitor");
+        }
+
+        let Some(dvc) = self.active_stage.get_dvc::<DisplayControlClient>() else {
+            warn!("DisplayControl DVC not available, monitor layout skipped");
+            return Ok(false);
+        };
+        let Some(channel_id) = dvc.channel_id() else {
+            warn!("DisplayControl DVC not ready, monitor layout skipped");
+            return Ok(false);
+        };
+
+        let mut entries = Vec::with_capacity(monitors.len());
+        let mut left: i32 = 0;
+        for (index, &(width, height)) in monitors.iter().enumerate() {
+            let (width, height) = MonitorLayoutEntry::adjust_display_size(width, height);
+            let entry = if index == 0 {
+                // Primary monitor position is fixed at (0, 0) per MS-RDPEDISP.
+                MonitorLayoutEntry::new_primary(width, height)
+            } else {
+                MonitorLayoutEntry::new_secondary(width, height)
+                    .and_then(|e| e.with_position(left, 0))
+            }
+            .map_err(|e| anyhow::anyhow!("build monitor layout entry {index}: {e}"))?;
+            left = left.saturating_add(width.try_into().unwrap_or(i32::MAX));
+            entries.push(entry);
+        }
+
+        let layout = DisplayControlMonitorLayout::new(&entries)
+            .map_err(|e| anyhow::anyhow!("build monitor layout: {e}"))?;
+        let pdu: DisplayControlPdu = layout.into();
+        let svc_messages =
+            encode_dvc_messages(channel_id, vec![Box::new(pdu)], ChannelFlags::empty())
+                .map_err(|e| anyhow::anyhow!("encode monitor layout DVC message: {e}"))?;
+        let frame = self
+            .active_stage
+            .encode_dvc_messages(svc_messages)
+            .map_err(|e| anyhow::anyhow!("encode monitor layout frame: {e}"))?;
+
+        self.metrics.record_bytes_sent(frame.len() as u64);
+        self.writer
+            .write_all(&frame)
+            .await
+            .map_err(|e| anyhow::anyhow!("write monitor layout PDU: {e}"))?;
+
+        self.monitor_layout = monitors.to_vec();
+        info!(monitor_count = entries.len(), "Monitor layout PDU sent");
+        Ok(true)
+    }
+
+    /// The last monitor layout successfully sent via `send_monitor_layout`, as
+    /// (width, height) pairs in left-to-right order. Empty if `monitor set` has
+    /// not been used this session (single implicit primary monitor).
+    pub(crate) fn monitor_layout(&self) -> &[(u32, u32)] {
+        &self.monitor_layout
     }
 
     // --- Input injection ---
@@ -1026,7 +1200,9 @@ impl HeadlessSession {
                 return Ok(());
             }
             state.data_requested = false;
-            state.pending_send.take()
+            // We stay the clipboard owner until the server announces a copy of
+            // its own, so every paste of this copy must get the same text.
+            state.pending_send.clone()
         };
 
         if let Some(text) = pending_text {

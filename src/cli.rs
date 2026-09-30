@@ -18,8 +18,8 @@ pub(crate) enum DiffMode {
 pub(crate) enum MonitorAction {
     /// Print current monitor info as JSON.
     List,
-    /// Set monitor layout: single primary with given dimensions.
-    Set { width: u32, height: u32 },
+    /// Set monitor layout: one or more monitors, left to right, index 0 primary.
+    Set { monitors: Vec<(u32, u32)> },
 }
 
 /// RDP automation tool. Commands are chained on the command line:
@@ -786,12 +786,13 @@ pub(crate) fn parse_commands(tokens: &[String]) -> Result<Vec<Command>> {
                         commands.push(Command::Monitor(MonitorAction::List));
                     }
                     "set" => {
-                        let dims = require_arg(tokens, &mut i, "monitor set (WIDTHxHEIGHT)")?;
-                        let (w, h) = parse_resize(&dims)?;
-                        commands.push(Command::Monitor(MonitorAction::Set {
-                            width: w,
-                            height: h,
-                        }));
+                        let dims = require_arg(
+                            tokens,
+                            &mut i,
+                            "monitor set (WIDTHxHEIGHT[+WIDTHxHEIGHT...])",
+                        )?;
+                        let monitors = parse_monitor_layout(&dims)?;
+                        commands.push(Command::Monitor(MonitorAction::Set { monitors }));
                     }
                     other => bail!("unknown monitor action '{other}' (use: list, set)"),
                 }
@@ -1204,4 +1205,11 @@ pub(crate) fn parse_resize(spec: &str) -> Result<(u32, u32)> {
         .map_err(|e| anyhow::anyhow!("invalid height: {e}"))?;
 
     Ok((w, h))
+}
+
+/// Parse a monitor layout spec: one or more `WIDTHxHEIGHT` entries joined by
+/// `+`, left to right, index 0 primary (e.g. "1280x800+1280x800" for two
+/// side-by-side monitors, or plain "1920x1080" for one).
+pub(crate) fn parse_monitor_layout(spec: &str) -> Result<Vec<(u32, u32)>> {
+    spec.split('+').map(parse_resize).collect()
 }

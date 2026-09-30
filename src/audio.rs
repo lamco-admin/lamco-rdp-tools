@@ -15,16 +15,23 @@ use tracing::debug;
 pub(crate) struct AudioState {
     /// True once the RDPSND channel is negotiated and ready.
     pub ready: bool,
-    /// Server-offered audio formats (populated during negotiation).
-    pub server_formats: Vec<AudioFormat>,
-    /// Index into `server_formats` for the selected format.
-    pub selected_format: Option<usize>,
     /// Whether we're currently recording audio data.
     pub recording: bool,
     /// Accumulated PCM samples during recording.
     pub pcm_buffer: Vec<u8>,
-    /// Format parameters for the captured audio.
+    /// Format parameters for the captured audio, resolved from the observed
+    /// data rate (see `wave()` -- there is no reliable way to resolve
+    /// `wFormatNo` directly, see that method's doc comment).
     pub capture_format: Option<CaptureFormat>,
+    /// `audio_timestamp` of the first Wave2 PDU seen, used as the baseline
+    /// for the data-rate measurement that resolves `capture_format`.
+    first_wave_audio_ts: Option<u32>,
+    /// Bytes received since `first_wave_audio_ts`, for the same measurement.
+    bytes_since_first_wave: usize,
+    /// Set once the data-rate measurement has resolved `capture_format`, so
+    /// `wave()` stops re-measuring (one confirmation is enough; the estimate
+    /// only gets noisier by re-measuring from a moving baseline).
+    format_resolved: bool,
 }
 
 /// WAV-compatible format metadata for captured audio.
@@ -36,15 +43,27 @@ pub(crate) struct CaptureFormat {
     pub block_align: u16,
 }
 
+impl From<&AudioFormat> for CaptureFormat {
+    fn from(fmt: &AudioFormat) -> Self {
+        Self {
+            channels: fmt.n_channels,
+            sample_rate: fmt.n_samples_per_sec,
+            bits_per_sample: fmt.bits_per_sample,
+            block_align: fmt.n_block_align,
+        }
+    }
+}
+
 impl AudioState {
     pub(crate) fn new() -> Self {
         Self {
             ready: false,
-            server_formats: Vec::new(),
-            selected_format: None,
             recording: false,
             pcm_buffer: Vec::new(),
             capture_format: None,
+            first_wave_audio_ts: None,
+            bytes_since_first_wave: 0,
+            format_resolved: false,
         }
     }
 }
@@ -80,32 +99,66 @@ impl RdpsndClientHandler for AudioCaptureBackend {
         &SUPPORTED_FORMATS
     }
 
-    fn wave(&mut self, format_no: usize, _ts: u32, data: Cow<'_, [u8]>) {
+    /// `format_no` is documented (MS-RDPEA 3.1.1.2, 2.2.2.3) as an index into
+    /// the format list the *client* sent in the Client Audio Formats PDU --
+    /// not the server's original offer. `ironrdp_rdpsnd::client::Rdpsnd`
+    /// builds that client-sent list internally via `HashSet::intersection()`
+    /// (unordered) and never exposes the resulting list or its order, so
+    /// `format_no` cannot be resolved back to a concrete `AudioFormat` from
+    /// out here; `Rdpsnd::get_format()` indexes the server's original offer
+    /// instead, which is a different list and gives the wrong entry whenever
+    /// more than one of our `SUPPORTED_FORMATS` overlaps the server's offer
+    /// (the common case -- confirmed live: server's format 0 decodes as
+    /// Opus/48kHz, but the negotiated wire format was PCM/44100Hz).
+    ///
+    /// Since PCM byte-rate (`n_avg_bytes_per_sec`) is unique across almost
+    /// all of `SUPPORTED_FORMATS`, resolve the format instead by measuring
+    /// the actual observed rate (bytes received per elapsed `audio_timestamp`
+    /// millisecond) and matching it to the closest candidate. `format_no` is
+    /// constant for the life of a session, so one measurement is enough.
+    fn wave(&mut self, _format_no: usize, ts: u32, data: Cow<'_, [u8]>) {
         let mut state = self.state.lock().expect("audio lock");
 
-        // Store format info from the first wave packet
-        if state.capture_format.is_none()
-            && let Some(fmt) = state.server_formats.get(format_no)
-        {
-            let channels = fmt.n_channels;
-            let sample_rate = fmt.n_samples_per_sec;
-            let bits_per_sample = fmt.bits_per_sample;
-            let block_align = fmt.n_block_align;
-            state.capture_format = Some(CaptureFormat {
-                channels,
-                sample_rate,
-                bits_per_sample,
-                block_align,
-            });
-            state.selected_format = Some(format_no);
-            debug!(
-                format_no,
-                channels,
-                sample_rate,
-                bits = bits_per_sample,
-                "Audio format selected"
-            );
+        if !state.format_resolved {
+            match state.first_wave_audio_ts {
+                None => {
+                    state.first_wave_audio_ts = Some(ts);
+                    // Seed a provisional guess so the first wave's bytes are
+                    // still captured under a reasonable label; corrected
+                    // below once enough samples exist to measure a real rate.
+                    state
+                        .capture_format
+                        .get_or_insert_with(|| (&SUPPORTED_FORMATS[0]).into());
+                }
+                Some(first_ts) => {
+                    // A single ~20ms frame is too noisy to resolve to a
+                    // specific candidate rate; wait for a wider window.
+                    let elapsed_ms = ts.saturating_sub(first_ts);
+                    if elapsed_ms >= 200 {
+                        let observed_bytes_per_sec =
+                            state.bytes_since_first_wave as f64 * 1000.0 / f64::from(elapsed_ms);
+                        if let Some(best) = SUPPORTED_FORMATS.iter().min_by(|a, b| {
+                            let da =
+                                (f64::from(a.n_avg_bytes_per_sec) - observed_bytes_per_sec).abs();
+                            let db =
+                                (f64::from(b.n_avg_bytes_per_sec) - observed_bytes_per_sec).abs();
+                            da.total_cmp(&db)
+                        }) {
+                            debug!(
+                                observed_bytes_per_sec,
+                                channels = best.n_channels,
+                                sample_rate = best.n_samples_per_sec,
+                                bits = best.bits_per_sample,
+                                "Audio format resolved from observed data rate"
+                            );
+                            state.capture_format = Some(best.into());
+                        }
+                        state.format_resolved = true;
+                    }
+                }
+            }
         }
+        state.bytes_since_first_wave += data.len();
 
         if state.recording {
             state.pcm_buffer.extend_from_slice(&data);

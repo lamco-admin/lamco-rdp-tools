@@ -679,16 +679,22 @@ static ALL_COMMANDS: &[CommandDoc] = &[
         args: &[
             ("list", "Print current monitor layout as JSON."),
             (
-                "set <WIDTHxHEIGHT>",
-                "Set a single primary monitor with given dimensions.",
+                "set <WIDTHxHEIGHT[+WIDTHxHEIGHT...]>",
+                "Set one or more monitors, left to right, first entry primary.",
             ),
         ],
         examples: &[
             "rdpdo -s host monitor list",
             "rdpdo -s host monitor set 1920x1080",
+            "rdpdo -s host monitor set 1280x800+1280x800 pause 2 capture /tmp/m0.png 0,0,1280,800",
+            "rdpdo -s host monitor set 1280x800+1280x800 pause 2 capture /tmp/m1.png 1280,0,1280,800",
         ],
         needs_connection: true,
-        notes: "Uses RDP DisplayControl (MS-RDPEDISP) for dynamic layout changes.",
+        notes: "Uses RDP DisplayControl (MS-RDPEDISP) for dynamic layout changes. Each \
+                additional monitor is tiled immediately to the right of the previous \
+                one at top=0; use `capture <path> LEFT,TOP,WIDTH,HEIGHT` to grab a \
+                single monitor's region from the composited frame (`monitor list` \
+                reports each monitor's left/top/width/height after `set`).",
     },
     // ── Audio ───────────────────────────────────────────────────────
     CommandDoc {
