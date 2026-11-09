@@ -34,7 +34,7 @@ fn resolve_profile(category: &str, name: &str, custom_path: Option<&str>) -> Res
     }
 
     // Check user override directory
-    if let Some(mut config_dir) = dirs::config_dir() {
+    if let Some(mut config_dir) = crate::paths::config_dir() {
         config_dir.push("rdpdo");
         config_dir.push("profiles");
         config_dir.push(category);

@@ -2082,7 +2082,7 @@ fn baseline_dir(custom: Option<&str>) -> std::path::PathBuf {
     if let Some(dir) = custom {
         std::path::PathBuf::from(dir)
     } else {
-        dirs::config_dir()
+        crate::paths::config_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("rdpdo")
             .join("baselines")
@@ -2267,7 +2267,7 @@ async fn run_repl_interactive(
     let prompt_clone = Arc::clone(&prompt);
 
     // History file
-    let history_path = dirs::config_dir()
+    let history_path = crate::paths::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("rdpdo")
         .join("history.txt");

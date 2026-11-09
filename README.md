@@ -121,15 +121,29 @@ binaries are not yet Authenticode-signed, so Windows SmartScreen shows a one-tim
 warning on first run. Configuration (profiles, calibration) lives under
 `%APPDATA%\rdpdo\`.
 
+### macOS
+
+Build from source on Apple Silicon (arm64); Intel Macs are not tested. For H.264
+decode, install OpenH264 with Homebrew:
+
+```bash
+brew install openh264
+```
+
+The tools look for `/opt/homebrew/lib/libopenh264.dylib`. If it is installed
+elsewhere, set `OPENH264_LIBRARY_PATH` to the full path. Configuration (profiles,
+calibration, baselines) lives under `~/.config/rdpdo/`, the same as on Linux.
+
 ## Requirements
 
 - Rust 1.89+ and edition 2024 (to build from source)
 - A reachable RDP target (the tools are clients; they do not host a server)
 - **Optional:** the OpenH264 shared library for H.264/AVC420 decode in
-  `rdpsee shot` and `rdpdo` capture (`libopenh264.so` on Linux, `openh264.dll` on
-  Windows). It is loaded at runtime; the tools look next to the executable, then
-  in the system locations, or wherever `OPENH264_LIBRARY_PATH` points. Without it,
-  H.264 frames are skipped and other codecs (uncompressed, RemoteFX) still decode.
+  `rdpsee shot` and `rdpdo` capture (`libopenh264.so` on Linux,
+  `libopenh264.dylib` on macOS, `openh264.dll` on Windows). It is loaded at
+  runtime; the tools look next to the executable, then in the system locations, or
+  wherever `OPENH264_LIBRARY_PATH` points. Without it, H.264 frames are skipped and
+  other codecs (uncompressed, RemoteFX) still decode.
 
 ## Documentation
 

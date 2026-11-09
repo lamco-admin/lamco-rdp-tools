@@ -260,7 +260,7 @@ pub(crate) fn save_profile(profile: &CalibrationProfile, output: Option<&str>) -
         p.to_owned()
     } else {
         // Auto-discovery: ~/.config/rdpdo/calibration/<server>-<WxH>.json
-        let config_dir = dirs::config_dir()
+        let config_dir = crate::paths::config_dir()
             .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?;
         let cal_dir = config_dir.join("rdpdo").join("calibration");
         std::fs::create_dir_all(&cal_dir)?;
@@ -287,7 +287,7 @@ pub(crate) fn load_profile(
     height: u16,
 ) -> Result<CalibrationProfile> {
     let path = if path_or_auto == "auto" {
-        let config_dir = dirs::config_dir()
+        let config_dir = crate::paths::config_dir()
             .ok_or_else(|| anyhow::anyhow!("could not determine config directory"))?;
         let server_safe = server.replace(':', "-").replace('/', "_");
         let cal_path = config_dir
