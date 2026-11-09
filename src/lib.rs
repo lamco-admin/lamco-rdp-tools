@@ -23,6 +23,7 @@ mod help;
 mod input;
 mod matching;
 mod needle;
+mod paths;
 mod pixel;
 mod probe;
 mod provision;

@@ -536,7 +536,9 @@ pub(crate) async fn connect_headless(
 /// Default filename of the Cisco `OpenH264` shared library for this platform.
 #[cfg(windows)]
 const OPENH264_LIB_NAME: &str = "openh264.dll";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+const OPENH264_LIB_NAME: &str = "libopenh264.dylib";
+#[cfg(not(any(windows, target_os = "macos")))]
 const OPENH264_LIB_NAME: &str = "libopenh264.so";
 
 /// System search paths for the Cisco `OpenH264` shared library, per platform.
@@ -548,11 +550,14 @@ const OPENH264_SEARCH_PATHS: &[&str] = &[
     "/usr/lib64/libopenh264.so",
     "/usr/lib/libopenh264.so",
 ];
+/// Homebrew on Apple Silicon installs under `/opt/homebrew`.
+#[cfg(target_os = "macos")]
+const OPENH264_SEARCH_PATHS: &[&str] = &["/opt/homebrew/lib/libopenh264.dylib"];
 /// On Windows the library is found next to the executable or via the DLL search
 /// order; a bare name also covers the working directory.
 #[cfg(windows)]
 const OPENH264_SEARCH_PATHS: &[&str] = &["openh264.dll"];
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 const OPENH264_SEARCH_PATHS: &[&str] = &[];
 
 /// Try to load an H.264 decoder.

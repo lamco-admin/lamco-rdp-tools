@@ -41,6 +41,20 @@ jobs:
       - name: Clippy (pedantic gate)
         run: cargo clippy --release --bins
 
+  build-macos:
+    name: build + clippy (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --bins
+      - name: Clippy (pedantic gate)
+        run: cargo clippy --release --bins
+
   format:
     name: rustfmt
     runs-on: ubuntu-latest
