@@ -28,9 +28,7 @@ use ironrdp_displaycontrol::{
 use ironrdp_dvc::encode_dvc_messages;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::input::fast_path::FastPathInputEvent;
-use ironrdp_session::{
-    ActiveStage, ActiveStageBuilder, ActiveStageOutput, fast_path, image::DecodedImage,
-};
+use ironrdp_session::{ActiveStage, ActiveStageBuilder, ActiveStageOutput, image::DecodedImage};
 use ironrdp_svc::ChannelFlags;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
 use tracing::{debug, info, trace, warn};
@@ -217,6 +215,14 @@ impl HeadlessSession {
             compression_type,
             // desktop_size already consumed above.
             desktop_size: _,
+            // Input still goes fast-path whatever the server's flags say, as it did
+            // before connector 0.11 exposed them.
+            input_flags: _,
+            refresh_rect_support: _,
+            suppress_output_support: _,
+            // A desktop session: drawing orders stay ignored.
+            window_support_level: _,
+            monitor_layout: _,
         } = connection_result;
 
         let active_stage = ActiveStageBuilder {
@@ -352,15 +358,35 @@ impl HeadlessSession {
 
     /// Process incoming frames until at least one graphics update arrives, or timeout.
     pub(crate) async fn wait_for_frame(&mut self, timeout: Duration) -> Result<bool> {
-        let deadline = Instant::now() + timeout;
         // Count both legacy bitmap updates and EGFX decoded frames. EGFX frames
         // arrive via the DVC graphics pipeline and increment `egfx_frame_count`,
         // not `graphics_updates`, so keying on the bitmap counter alone misses
         // them entirely (an AVC420 server then always reports no initial frame).
         let initial_count = self.frame_count();
+        self.read_until(timeout, |session| session.frame_count() > initial_count)
+            .await
+    }
+
+    /// Process incoming frames until decoded screen content arrives, or timeout.
+    ///
+    /// The frame count is no signal for this: An EGFX frame completes, and counts,
+    /// even when nothing in it was painted, such as an H.264 frame with no decoder
+    /// loaded or an update upstream dropped as undecodable.
+    pub(crate) async fn wait_for_content(&mut self, timeout: Duration) -> Result<bool> {
+        self.read_until(timeout, Self::has_content).await
+    }
+
+    /// Process incoming frames until `reached` holds (true) or the timeout or a
+    /// disconnect comes first (false).
+    async fn read_until(
+        &mut self,
+        timeout: Duration,
+        reached: impl Fn(&Self) -> bool,
+    ) -> Result<bool> {
+        let deadline = Instant::now() + timeout;
 
         loop {
-            if self.frame_count() > initial_count {
+            if reached(self) {
                 return Ok(true);
             }
 
@@ -377,7 +403,7 @@ impl HeadlessSession {
                             self.process_pdu(action, &payload)
                         }
                         Err(e) => {
-                            debug!("Peer disconnected while waiting for frame: {e}");
+                            debug!("Peer disconnected while waiting for a frame: {e}");
                             self.peer_disconnected = true;
                             return Ok(false);
                         }
@@ -402,7 +428,13 @@ impl HeadlessSession {
         action: ironrdp_pdu::Action,
         payload: &[u8],
     ) -> Result<Vec<ActiveStageOutput>> {
-        match self.active_stage.process(&mut self.image, action, payload) {
+        // The read time lets the session answer a Bandwidth Measure Stop with a real
+        // byte rate instead of 0 kbps.
+        let received_at = self.reader.last_read_at();
+        match self
+            .active_stage
+            .process(&mut self.image, action, payload, received_at)
+        {
             Ok(outputs) => Ok(outputs),
             Err(e) if format!("{e:?}").contains("non existing DVC channel") => {
                 debug!(error = ?e, "Skipping data PDU for an unhandled DVC channel");
@@ -465,6 +497,8 @@ impl HeadlessSession {
                             enable_server_pointer,
                             pointer_software_rendering,
                             share_id,
+                            static_channel_chunk_size,
+                            ..
                         } = connection_activation.connection_activation_state()
                         {
                             info!(
@@ -488,19 +522,18 @@ impl HeadlessSession {
                                 );
                                 self.egfx_has_content.store(false, Ordering::Relaxed);
                             }
-                            self.active_stage.set_fastpath_processor(
-                                fast_path::ProcessorBuilder {
-                                    io_channel_id,
-                                    user_channel_id,
-                                    enable_server_pointer,
-                                    pointer_software_rendering,
-                                    share_id,
-                                    bulk_decompressor: None,
-                                }
-                                .build(),
-                            );
-                            self.active_stage
-                                .set_enable_server_pointer(enable_server_pointer);
+                            if !self.active_stage.reactivate(
+                                io_channel_id,
+                                user_channel_id,
+                                share_id,
+                                enable_server_pointer,
+                                pointer_software_rendering,
+                                static_channel_chunk_size,
+                            ) {
+                                bail!(
+                                    "reactivation: server negotiated an invalid static channel chunk size ({static_channel_chunk_size})"
+                                );
+                            }
                             break;
                         }
                     }
@@ -637,17 +670,17 @@ impl HeadlessSession {
         self.metrics.graphics_updates + self.egfx_frame_count.load(Ordering::Relaxed)
     }
 
-    /// Get the full framebuffer as an owned `RgbaImage`.
-    ///
-    /// Prefers the EGFX composited framebuffer when EGFX content has been
-    /// rendered; falls back to the slow-path framebuffer otherwise.
-    /// True once any screen content has been received. EGFX content can arrive
-    /// via `SolidFill` / `RemoteFX` / surface copies that populate the framebuffer
-    /// without incrementing the frame counter, so this checks the content flag.
+    /// True once any screen content has been received. An EGFX frame can complete
+    /// without painting anything, so this checks the content flag rather than the
+    /// frame counter.
     pub(crate) fn has_content(&self) -> bool {
         self.egfx_has_content.load(Ordering::Relaxed) || self.metrics.graphics_updates > 0
     }
 
+    /// Get the full framebuffer as an owned `RgbaImage`.
+    ///
+    /// Prefers the EGFX composited framebuffer when EGFX content has been
+    /// rendered; falls back to the slow-path framebuffer otherwise.
     pub(crate) fn current_frame(&self) -> image::RgbaImage {
         if self.egfx_has_content.load(Ordering::Relaxed) {
             let fb = self.egfx_framebuffer.lock().expect("egfx framebuffer lock");
@@ -785,14 +818,13 @@ impl HeadlessSession {
             bail!("monitor layout requires at least one monitor");
         }
 
+        // get_dvc only returns a channel the server has opened, so a missing one may
+        // be unconfigured or still opening.
         let Some(dvc) = self.active_stage.get_dvc::<DisplayControlClient>() else {
-            warn!("DisplayControl DVC not available, monitor layout skipped");
-            return Ok(false);
-        };
-        let Some(channel_id) = dvc.channel_id() else {
             warn!("DisplayControl DVC not ready, monitor layout skipped");
             return Ok(false);
         };
+        let channel_id = dvc.channel_id();
 
         let mut entries = Vec::with_capacity(monitors.len());
         let mut left: i32 = 0;

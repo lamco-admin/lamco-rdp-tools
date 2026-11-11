@@ -84,11 +84,11 @@ pub(crate) async fn fingerprint(
     timeout: Duration,
 ) -> Result<FingerprintReport> {
     let handshake = cert::connect_tls(dest, timeout).await?;
-    let tbs = &handshake.certificate.tbs_certificate;
+    let tbs = handshake.certificate.tbs_certificate();
 
-    let public_key_oid = tbs.subject_public_key_info.algorithm.oid.to_string();
-    let signature_oid = tbs.signature.oid.to_string();
-    let self_signed = tbs.subject == tbs.issuer;
+    let public_key_oid = tbs.subject_public_key_info().algorithm.oid.to_string();
+    let signature_oid = tbs.signature().oid.to_string();
+    let self_signed = tbs.subject() == tbs.issuer();
 
     let der = handshake
         .certificate

@@ -248,6 +248,7 @@ pub(crate) async fn negotiate_protocol(
         nego_data: None,
         flags: RequestFlags::empty(),
         protocol: requested,
+        correlation_info: None,
     };
     let wire =
         encode_vec(&X224(request)).map_err(|e| anyhow::anyhow!("encode nego request: {e}"))?;

@@ -11,7 +11,7 @@
 //! and a completed session (`report` capability report, `shot` recon
 //! screenshot). Only `report` and `shot` may authenticate, and only to read.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::Parser;
@@ -460,15 +460,8 @@ async fn shot_server(cli: &Cli) -> Result<()> {
     session.set_server_addr(&cli.server);
 
     // shot needs decoded frames, so complete the connection and let the screen
-    // render before capturing.
-    // EGFX frames arrive via the DVC graphics pipeline, which `wait_for_frame`
-    // does not count; poll the combined frame counter so this works for both
-    // bitmap and EGFX servers. EGFX can take several seconds for the first frame.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !session.has_content() && Instant::now() < deadline {
-        session.run_for(Duration::from_millis(250)).await?;
-    }
-    if !session.has_content() {
+    // render before capturing. EGFX can take several seconds for the first frame.
+    if !session.wait_for_content(Duration::from_secs(10)).await? {
         eprintln!("warning: no frame received within 10s; capturing whatever is present");
     }
     session.run_for(Duration::from_secs(1)).await?;

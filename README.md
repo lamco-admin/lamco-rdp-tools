@@ -82,7 +82,8 @@ rdpdo -s host --junit results.xml expect /tmp/app.png 0.95 30
 rdpdo -s host --record /tmp/session.rdpdo run ./setup.rdpdo-script
 ```
 
-It speaks EGFX (RemoteFX, and H.264/AVC420 decode when OpenH264 is present),
+It speaks EGFX (RemoteFX, RemoteFX Progressive, and H.264/AVC420 decode when
+OpenH264 is present),
 writes `--json` output for matching, pixel, and report commands, and can emit a
 JUnit XML report for CI.
 
@@ -123,13 +124,15 @@ warning on first run. Configuration (profiles, calibration) lives under
 
 ## Requirements
 
-- Rust 1.89+ and edition 2024 (to build from source)
+- Rust 1.94+ and edition 2024 (to build from source)
 - A reachable RDP target (the tools are clients; they do not host a server)
 - **Optional:** the OpenH264 shared library for H.264/AVC420 decode in
   `rdpsee shot` and `rdpdo` capture (`libopenh264.so` on Linux, `openh264.dll` on
   Windows). It is loaded at runtime; the tools look next to the executable, then
   in the system locations, or wherever `OPENH264_LIBRARY_PATH` points. Without it,
-  H.264 frames are skipped and other codecs (uncompressed, RemoteFX) still decode.
+  the tools don't offer H.264 to the server, so it sends another codec (RemoteFX
+  Progressive, RemoteFX, planar or uncompressed), which still decodes. `rdpdo`
+  refuses a capture, rather than saving it blank, while nothing has decoded yet.
 
 ## Documentation
 

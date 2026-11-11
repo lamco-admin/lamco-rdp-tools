@@ -19,7 +19,8 @@ use ironrdp_pdu::{
     nego::{ConnectionConfirm, SecurityProtocol},
     rdp::{
         capability_sets::{
-            CapabilitySet, CodecProperty, MajorPlatformType, client_codecs_capabilities,
+            CapabilitySet, CodecProperty, MajorPlatformType, RailSupportLevel,
+            client_codecs_capabilities,
         },
         client_info::{CompressionType, PerformanceFlags, TimezoneInfo},
         headers::{ShareControlPdu, decode_share_control},
@@ -339,13 +340,24 @@ pub(crate) fn build_connector_config(
         domain: None,
         enable_tls,
         enable_credssp,
-        keyboard_type: ironrdp_pdu::gcc::KeyboardType::IbmEnhanced,
+        enable_standard_rdp_security: false,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType::IBM_ENHANCED,
         keyboard_subtype: 0,
         keyboard_layout: 0,
         keyboard_functional_keys_count: 12,
+        connection_type: ironrdp_pdu::gcc::ConnectionType::Lan,
         ime_file_name: String::new(),
         dig_product_id: String::new(),
         desktop_size: DesktopSize { width, height },
+        // Connector 0.12 made these settings. Left unset they send what 0.11 sent:
+        // Zero physical size, orientation from the desktop size, no extended monitor
+        // data, and RDP 5+ without relative mouse input.
+        desktop_physical_size: None,
+        desktop_orientation: None,
+        device_scale_factor: None,
+        monitor_extended_layout: None,
+        relative_mouse_input: false,
+        monitor_layout: None,
         desktop_scale_factor: 0,
         bitmap: Some(connector::BitmapConfig {
             color_depth: 32,
@@ -361,6 +373,7 @@ pub(crate) fn build_connector_config(
         enable_server_pointer: true,
         autologon: no_auth,
         enable_audio_playback: true,
+        enable_audio_capture: false,
         request_data: None,
         pointer_software_rendering: false,
         multitransport_flags: None,
@@ -369,6 +382,13 @@ pub(crate) fn build_connector_config(
         timezone_info: TimezoneInfo::default(),
         alternate_shell: String::new(),
         work_dir: String::new(),
+        remote_application_mode: false,
+        rail_support_level: RailSupportLevel::empty(),
+        // MS-RDPEGFX 1.5.1 has an EGFX client set this, and gnome-remote-desktop closes
+        // the connection of a client that doesn't. build_connector always registers the
+        // EGFX client, and the connector answers the network characteristics detection
+        // that MS-RDPBCGR 2.2.1.3.2 requires along with it. lamco-rdp-server ignores it.
+        support_dyn_vc_gfx_protocol: true,
     }
 }
 
@@ -379,13 +399,12 @@ fn build_connector(
     connector_config: connector::Config,
     client_addr: std::net::SocketAddr,
     gfx_handler: HeadlessGfxHandler,
+    h264_decoder: Option<Box<dyn H264Decoder>>,
 ) -> (
     connector::ClientConnector,
     Arc<Mutex<ClipboardState>>,
     Arc<Mutex<AudioState>>,
 ) {
-    let h264_decoder = load_h264_decoder();
-
     let drdynvc = DrdynvcClient::new()
         .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
         .with_dynamic_channel(ironrdp_egfx::client::GraphicsPipelineClient::new(
@@ -437,7 +456,9 @@ pub(crate) async fn connect_headless(
     let width = connector_config.desktop_size.width;
     let height = connector_config.desktop_size.height;
 
-    let gfx_handler = HeadlessGfxHandler::new(width, height);
+    // The handler advertises AVC420 only when this loads.
+    let h264_decoder = load_h264_decoder();
+    let gfx_handler = HeadlessGfxHandler::new(width, height, h264_decoder.is_some());
     let egfx_framebuffer = gfx_handler.framebuffer();
     let egfx_has_content = gfx_handler.has_content();
     let egfx_negotiated = gfx_handler.negotiated();
@@ -445,7 +466,7 @@ pub(crate) async fn connect_headless(
     let egfx_frame_count = gfx_handler.frame_counter();
 
     let (mut connector, clipboard_state, audio_state) =
-        build_connector(connector_config, client_addr, gfx_handler);
+        build_connector(connector_config, client_addr, gfx_handler, h264_decoder);
 
     // Phase 1: X.224 negotiation
     info!("Starting X.224 negotiation");
@@ -499,7 +520,8 @@ pub(crate) async fn connect_headless(
         server_public_key.to_owned(),
         None,
     )
-    .await?;
+    .await?
+    .into_connected()?;
 
     info!(
         width = connection_result.desktop_size.width,
@@ -560,7 +582,7 @@ const OPENH264_SEARCH_PATHS: &[&str] = &[];
 /// Search order: the `OPENH264_LIBRARY_PATH` override, then the library next to our
 /// own executable, then the per-platform system search paths. Each candidate is
 /// loaded through `try_load_h264`. Returns `None` when none is found, in which case
-/// AVC420 frames are skipped and other codecs still decode.
+/// AVC420 is not advertised and the server picks another codec.
 fn load_h264_decoder() -> Option<Box<dyn H264Decoder>> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(path) = std::env::var("OPENH264_LIBRARY_PATH") {
@@ -651,9 +673,9 @@ fn try_load_h264(path: &Path) -> LoadOutcome {
 ///
 /// AVC420 carries full-range BT.709, but `openh264`'s `write_rgba8` assumes
 /// limited-range BT.601, which shifted every capture (green about 16 low on a
-/// blue desktop) and skewed pixel assertions. The upstream `OpenH264Decoder` in
-/// `ironrdp-egfx` 0.3.0 has the same fault; `IronRDP` #1923 fixes it but is in no
-/// release yet, so both loader tiers use this decoder until one is.
+/// blue desktop) and skewed pixel assertions. The upstream `OpenH264Decoder` had the
+/// same fault until `IronRDP` #1923 (`ironrdp-egfx` 0.4.0), but it only loads Cisco's
+/// hash-verified binary, so both loader tiers keep using this decoder.
 struct Bt709H264Decoder {
     decoder: openh264::decoder::Decoder,
     annex_b_buf: Vec<u8>,

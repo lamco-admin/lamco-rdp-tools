@@ -29,21 +29,23 @@ The capture path decodes:
 |---|---|
 | Uncompressed | Decoded |
 | RemoteFX (RFX) | Decoded |
-| H.264 / AVC420 | Decoded via OpenH264 (loaded at runtime; skipped if absent) |
-| ClearCodec | Pending upstream support |
-| RFX Progressive | Not yet |
-| AVC444 | Not yet |
+| RFX Progressive | Decoded |
+| ClearCodec, Planar | Decoded |
+| H.264 / AVC420 | Decoded via OpenH264 (loaded at runtime; not offered to the server if absent) |
+| AVC444 | Not offered |
 
-When a frame uses a codec the tools do not decode, that frame is skipped rather
-than rendered incorrectly — so a capture reflects what could be decoded, and the
-tool tells you when nothing rendered.
+The tools offer the server only what they can decode. If a frame still can't be
+decoded, it's skipped rather than rendered incorrectly. `rdpdo` refuses a
+capture until something has actually been decoded, so it never saves the blank
+initial framebuffer as if it were the screen. `rdpsee shot` warns, then saves
+what it has, if nothing decodes within ten seconds.
 
 ## OpenH264 is optional
 
 H.264/AVC420 decode uses the OpenH264 shared library, loaded at runtime via
-`libloading`. It is **optional**: if the library is not present, H.264 frames are
-skipped and the other codecs still decode. Install OpenH264 if you need to capture
-servers that stream H.264.
+`libloading`. It is **optional**: If the library is not present, the tools don't
+offer H.264, and the server sends another codec instead (RemoteFX Progressive,
+RemoteFX, planar or uncompressed). Install OpenH264 to let a server stream H.264.
 
 The library file is `libopenh264.so` on Linux and `openh264.dll` on Windows. The
 tools look for it next to the executable first, then in the system locations, and
@@ -61,11 +63,10 @@ stable frame: it waits for the stream to settle.
 ## What this means for capture
 
 - A server using EGFX with AVC420 captures cleanly when OpenH264 is available.
-- A server using only RemoteFX or uncompressed bitmaps captures with no extra
-  dependencies.
-- A server using a not-yet-supported codec (ClearCodec, AVC444, progressive RFX)
-  may produce partial or empty captures; `report` will show you what the server
-  negotiated so you know what to expect.
+- A server using RemoteFX, RemoteFX Progressive, ClearCodec, planar or
+  uncompressed bitmaps captures with no extra dependencies.
+- AVC444 is never offered, so a server falls back to one of the above; `report`
+  shows you what the server negotiated.
 
 See [capture recon screenshots](../how-to/capture-screenshots.md) for the capture
 commands and [the connection and security model](connection-and-security.md) for

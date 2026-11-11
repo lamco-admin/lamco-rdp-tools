@@ -5,6 +5,93 @@ All notable changes to lamco-rdp-tools are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Versions tag the toolkit as a whole;
 both binaries (`rdpsee`, `rdpdo`) ship together.
 
+## [Unreleased]
+
+## [1.3.0] - 2026-11-07
+
+### Added
+
+- `RDPDO_EGFX_CAPS=v8` makes `rdpdo` advertise EGFX 8.0 alone instead of 8.1 and
+  8.0. An 8.0 client has neither H.264 nor RemoteFX Progressive, so a server has
+  to send it raw pixels; this is how to test that path, since `xfreerdp3` always
+  advertises 8.1 and later.
+
+### Fixed
+
+- `rdpdo` paints RemoteFX Progressive. A server with no H.264 encoder sends an
+  EGFX 8.1 client Progressive, which `ironrdp-egfx` 0.3 could not decode, so
+  the screen stayed blank. The client decodes it since 0.4, along with
+  RemoteFX, ClearCodec and Planar, and hands the tiles over as RGBA bitmap
+  updates.
+- Progressive no longer leaves stale 64-pixel columns on screen against
+  Windows 11. When the server moved a surface to a new codec context, the
+  decoder started a fresh tile grid and lost the tiles already painted;
+  `ironrdp-egfx` 0.5 keeps one grid per surface (IronRDP #2117).
+- Tiles a server paints from the EGFX bitmap cache reach the screen.
+  `ironrdp-egfx` applies `SurfaceToCache`, `CacheToSurface` and
+  `EvictCacheEntry` to its own compositor only, and `rdpdo` keeps its own
+  surfaces, so those tiles stayed black. Windows Server 2025 paints most
+  repeated tiles, plain white window areas among them, this way.
+- Every EGFX bitmap update now reaches the framebuffer whole. Its rectangle is
+  exclusive and was composited as an inclusive one, which dropped the update's
+  bottom row and wrote one stray pixel past its right edge. Under Progressive
+  that left the bottom row of every 64-pixel tile unpainted.
+- `rdpdo capture` again refuses, as 1.1.2 promised, to save a capture before
+  anything was decoded, and `rcapture` and `baseline update` now refuse too.
+  The guard and the initial-frame wait counted EGFX frames, and a frame counts
+  even when nothing in it was painted (an H.264 frame with no decoder, or an
+  update dropped as undecodable), so a black framebuffer could be written. Both
+  now wait for decoded content, as `rdpsee shot` already did.
+- Decoded content now means content that reached the screen. An update to a
+  surface the server never mapped to the output, or one with no pixel data,
+  no longer marks a blank framebuffer as painted, and a Reset Graphics clears
+  the mark along with the framebuffer. A `SolidFill` now counts, so a screen
+  painted only by fills is captured instead of refused.
+- A `SurfaceToSurface` whose source rectangle runs past its surface no longer
+  copies pixels from the following row; the part outside is left transparent
+  black. Both this and a bitmap update shorter than its rectangle are now
+  logged at debug level with their sizes instead of passing silently.
+- Dependency updates clear the published advisories against the lockfile:
+  `rustls` 0.23.46, `rustls-webpki` 0.103.16, `aws-lc-sys` 0.47, `tokio` 1.54.1,
+  `h2` 0.4.20, `libz-sys` 1.1.31, `crossbeam-epoch` 0.9.21, `crypto-bigint`
+  0.7.10, `ctutils` 0.4.7, `cryptoki` 0.12.1, `chacha20` 0.10.2 and `imageproc`
+  0.25.1. RUSTSEC-2023-0071 (`rsa`, through `ironrdp-connector`'s `sspi` and
+  `picky`) has no fixed release and remains.
+
+### Changed
+
+- `rdpdo` and `rdpsee` advertise the graphics pipeline in the Client Core
+  Data (`RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL`), which MS-RDPEGFX 1.5.1 asks
+  of an EGFX client. gnome-remote-desktop closed the connection without it
+  and now opens EGFX. Windows Server 2025 sent bitmap updates at 16-bit
+  colour without it and now opens EGFX 8.1 at 32-bit. lamco-rdp-server
+  ignores the flag.
+- IronRDP crates move to the 2026-10-27 release wave (connector 0.12, session
+  0.13, tokio 0.12, tls 0.3, pdu 0.11, core 0.3.1, cliprdr 0.9, dvc 0.10,
+  egfx 0.5, graphics 0.11, rdpsnd 0.11, input 0.9, displaycontrol 0.10,
+  svc 0.10), with `x509-cert` 0.3.
+- **Breaking for source builds:** The minimum supported Rust version rises
+  from 1.89 to 1.94, which the IronRDP crates now require. Release binaries
+  are unaffected.
+- H.264 (AVC420) is offered to the server only when the OpenH264 library
+  loads. Without it, `rdpdo` used to end up offering EGFX 8.0 alone; it now
+  offers 8.1 without H.264, so a server can still choose RemoteFX Progressive
+  over raw pixels.
+- AVIF encoding is no longer built in. `imageproc`'s defaults turned on every
+  `image` format, and AVIF encoding brought in `rav1e`, `ravif` and the
+  NCSA-licensed `libfuzzer-sys`. Every other format is still built, and
+  `image` never read AVIF without its `avif-native` feature, so every image
+  that loaded before still loads.
+- RemoteFX is decoded by `ironrdp-egfx` too. rdpdo's own decoder, which painted
+  the framebuffer but not the surface a later `SurfaceToSurface` copies from,
+  is gone.
+- `rdpdo audio-capture` takes the PCM format from the negotiated format list,
+  which `ironrdp-rdpsnd` now passes with each wave, instead of guessing it
+  from the observed data rate.
+- The EGFX frame count (`perf`, `watch`, `wait-change`) counts `EndFrame`s. It
+  counted bitmap updates, which `ironrdp-egfx` delivers per Progressive tile
+  and per AVC420 region rectangle.
+
 ## [1.2.0] - 2026-09-29
 
 ### Added

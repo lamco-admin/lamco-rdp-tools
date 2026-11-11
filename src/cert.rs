@@ -143,9 +143,9 @@ fn build_report(
     cert: &Certificate,
     negotiated: &ironrdp_tls::NegotiatedTls,
 ) -> Result<CertReport> {
-    let tbs = &cert.tbs_certificate;
-    let subject = tbs.subject.to_string();
-    let issuer = tbs.issuer.to_string();
+    let tbs = cert.tbs_certificate();
+    let subject = tbs.subject().to_string();
+    let issuer = tbs.issuer().to_string();
     let der = cert
         .to_der()
         .map_err(|e| anyhow::anyhow!("re-encode certificate DER: {e}"))?;
@@ -155,11 +155,11 @@ fn build_report(
         server,
         subject,
         issuer,
-        not_before: tbs.validity.not_before.to_string(),
-        not_after: tbs.validity.not_after.to_string(),
-        serial: tbs.serial_number.to_string(),
-        signature_algorithm: oid_name(&tbs.signature.oid.to_string()),
-        public_key: oid_name(&tbs.subject_public_key_info.algorithm.oid.to_string()),
+        not_before: tbs.validity().not_before.to_string(),
+        not_after: tbs.validity().not_after.to_string(),
+        serial: tbs.serial_number().to_string(),
+        signature_algorithm: oid_name(&tbs.signature().oid.to_string()),
+        public_key: oid_name(&tbs.subject_public_key_info().algorithm.oid.to_string()),
         subject_alt_names: subject_alt_names(tbs),
         sha256_fingerprint: hex_lower(&Sha256::digest(&der)),
         tls_version: negotiated.version.clone(),
@@ -168,7 +168,7 @@ fn build_report(
 }
 
 fn subject_alt_names(tbs: &x509_cert::TbsCertificate) -> Vec<String> {
-    match tbs.get::<SubjectAltName>() {
+    match tbs.get_extension::<SubjectAltName>() {
         Ok(Some((_critical, san))) => san.0.iter().map(general_name).collect(),
         _ => Vec::new(),
     }

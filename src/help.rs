@@ -1391,6 +1391,12 @@ pub(crate) fn after_help_text() -> String {
     out.push_str("  These commands work without -s/--server:\n");
     out.push_str("    diff, convert, audio-verify, help\n\n");
 
+    out.push_str("ENVIRONMENT:\n");
+    out.push_str("  RDPDO_EGFX_CAPS=v8   advertise EGFX 8.0 alone, so a server has to send raw\n");
+    out.push_str(
+        "                       pixels (8.0 has neither H.264 nor RemoteFX Progressive)\n\n",
+    );
+
     out.push_str("EXAMPLES:\n");
     out.push_str("  rdpdo -s host type \"hello\" key enter pause 2 capture /tmp/out.png\n");
     out.push_str("  rdpdo -s host --no-auth expect /tmp/desktop.png 0.95 30\n");

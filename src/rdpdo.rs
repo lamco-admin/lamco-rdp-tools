@@ -115,12 +115,12 @@ async fn run(cli: &Cli) -> Result<()> {
         session.set_calibration_offset(profile.correction.offset_x, profile.correction.offset_y);
     }
 
-    // Wait for initial frame before executing commands
+    // Wait for the first decoded screen content before executing commands
     let frame_wait = Duration::from_secs_f64(cli.frame_wait.max(0.0));
-    let got_frame = session.wait_for_frame(frame_wait).await?;
-    if !got_frame {
+    let got_content = session.wait_for_content(frame_wait).await?;
+    if !got_content {
         warn!(
-            "No initial frame received within {:.1}s; proceeding, but captures will fail rather than save a blank framebuffer (adjust with --frame-wait)",
+            "No screen content decoded within {:.1}s; proceeding, but captures will fail rather than save a blank framebuffer (adjust with --frame-wait)",
             frame_wait.as_secs_f64()
         );
     }
@@ -334,6 +334,19 @@ fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max { s } else { &s[..max] }
 }
 
+/// A capture taken before any screen content was decoded is the blank initial
+/// framebuffer, and saving it silently poisons whatever compares against it later.
+fn refuse_blank_capture(session: &HeadlessSession) -> Result<()> {
+    if session.has_content() {
+        return Ok(());
+    }
+    bail!(
+        "capture refused: no screen content decoded from the server yet; \
+         the framebuffer is blank (wait longer with --frame-wait \
+         or check the server's video pipeline)"
+    );
+}
+
 fn dispatch_command<'a>(
     session: &'a mut HeadlessSession,
     cmd: &'a Command,
@@ -414,15 +427,7 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
             session.run_for(Duration::from_millis(millis)).await?;
         }
         Command::Capture(path, region) => {
-            // A capture with zero frames received is just the initial blank
-            // framebuffer; saving it silently poisons downstream comparisons.
-            if session.frame_count() == 0 {
-                bail!(
-                    "capture refused: no frames received from server yet; \
-                     the framebuffer is blank (wait longer with --frame-wait \
-                     or check the server's video pipeline)"
-                );
-            }
+            refuse_blank_capture(session)?;
             capture::save_capture(session, path, region.as_deref())?;
         }
         Command::TypePassword(source) => {
@@ -925,6 +930,7 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
             println!("{}", serde_json::to_string_pretty(&perf)?);
         }
         Command::Rcapture { region, path } => {
+            refuse_blank_capture(session)?;
             capture::save_capture(session, path, Some(region.as_str()))?;
         }
         Command::AcceptPortal {
@@ -1203,6 +1209,7 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
                 .map_err(|e| anyhow::anyhow!("create baseline dir: {e}"))?;
 
             let path = baselines_dir.join(format!("{name}.png"));
+            refuse_blank_capture(session)?;
             session.save_screenshot(&path)?;
             info!(name, path = %path.display(), "Baseline saved");
             println!("{}", path.display());
@@ -2392,9 +2399,9 @@ async fn run_repl_interactive(
                                 // Shut down old session in the background
                                 let _ = old.shutdown().await;
 
-                                // Wait for initial frame
+                                // Wait for the first decoded screen content
                                 let wait = Duration::from_secs_f64(cli.frame_wait.max(0.0));
-                                let _ = session.wait_for_frame(wait).await;
+                                let _ = session.wait_for_content(wait).await;
                                 eprintln!("Reconnected.");
                             }
                             Err(e) => {
