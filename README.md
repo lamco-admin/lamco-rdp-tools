@@ -87,6 +87,13 @@ OpenH264 is present),
 writes `--json` output for matching, pixel, and report commands, and can emit a
 JUnit XML report for CI.
 
+`rdpdo` exits `0` when every command succeeded, `1` when a command failed, the
+connection failed, the server disconnected with commands still to run or
+`--timeout` elapsed, `2` when a global flag couldn't be parsed, and `3` when the
+chain ran to the end but a command marked `soft` failed. A command that reads
+the screen fails, rather than read a blank framebuffer, when no screen content
+has arrived for it. See [exit codes](docs/reference/exit-codes.md).
+
 ## Quick start
 
 ```bash

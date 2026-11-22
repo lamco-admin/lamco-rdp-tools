@@ -210,14 +210,24 @@ Assert a region matches a known checksum.
 Find clusters of a color on screen. Reports centroid and bounding box.
 .SS Provisioning
 .TP
-.BI accept\-portal " COMPOSITOR" " [--profile NAME] [--verify]"
+.BI accept\-portal " COMPOSITOR" " [--profile NAME]"
 Accept a compositor's screen-sharing permission dialog.
+.B \-\-verify
+is refused: the dialog closes on Cancel as well as on Share, so the screen
+can't show which happened.
 .TP
 .BI unlock " COMPOSITOR" " PASSWORD" " [--profile NAME] [--verify]"
 Unlock a locked screen.
 .TP
 .BI login " USERNAME" " PASSWORD" " [--profile NAME] [--verify]"
 Type credentials into a login screen using compositor-specific profiles.
+.IP
+With
+.BR \-\-verify ,
+unlock and login keep the screen as it is just before the profile's last
+input, wait up to 15 seconds for the screen to settle, and fail unless at
+least 25% of it changed, the result is not a single colour, and the server
+has not ended the session.
 .TP
 .BI boot\-sequence " SCRIPT"
 Run a provisioning script with longer default timeouts.
@@ -245,7 +255,8 @@ Waits 500ms between attempts.
 .TP
 .B soft
 Modifier: make the next command non-fatal. Logs failure but continues
-the command chain. Combine with retry for resilient scripts.
+the command chain, which then exits 3. Combine with retry for resilient
+scripts.
 .SS Baseline Management
 .TP
 .BI baseline " update NAME" " [--dir PATH]"
@@ -309,8 +320,23 @@ capture /tmp/{server}-{width}x{height}.png
 All commands completed successfully.
 .TP
 .B 1
-A command failed (timeout, assertion failure, connection error, etc.).
-Soft failures do not affect the exit status.
+A command failed (timeout, assertion failure, connection error, etc.),
+the command chain could not be parsed, or the server disconnected while
+commands were still to run.
+A command that reads the screen (expect, capture, pixel, checksum and the
+like) fails when no screen content has been decoded for it; commands that
+poll the screen wait up to their own timeout for it first.
+Marked
+.BR soft ,
+that failure exits 3 instead.
+.TP
+.B 2
+A global flag could not be parsed.
+.TP
+.B 3
+The chain ran to the end, but a command marked
+.B soft
+failed.
 .SH EXAMPLES
 Simple login and screenshot:
 .PP

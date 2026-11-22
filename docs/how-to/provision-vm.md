@@ -11,11 +11,14 @@ Some desktops show a portal permission dialog before they will share the screen.
 Accept it for the relevant compositor:
 
 ```bash
-rdpdo -s 192.168.1.10 accept-portal gnome --verify
+rdpdo -s 192.168.1.10 accept-portal gnome
 ```
 
-`--verify` confirms the dialog was dismissed. Profiles for each compositor live
-under `~/.config/rdpdo/profiles/`; pass `--profile NAME` to select one.
+Profiles for each compositor live under `~/.config/rdpdo/profiles/`; pass
+`--profile NAME` to select one. `accept-portal` refuses `--verify`: the dialog
+closes on Cancel as well as on Share, so the screen can't show which one
+happened. Check the grant where it takes effect, for example by connecting to
+the server that asked for it.
 
 ## Unlock a locked screen
 
@@ -23,14 +26,22 @@ under `~/.config/rdpdo/profiles/`; pass `--profile NAME` to select one.
 rdpdo -s 192.168.1.10 unlock gnome "$RDP_PASSWORD" --verify
 ```
 
+`--verify` fails the command unless the lock screen is gone: it keeps the screen
+as it was just before the profile's last input (the Enter that submits the
+password), waits up to 15 seconds for the screen to settle, and requires at least
+25% of it to have changed, the result not to be a single colour, and the session
+to still be connected. A rejected password changes only the prompt, so it fails.
+
 ## Log in
 
 ```bash
 rdpdo -s 192.168.1.10 login myuser "$RDP_PASSWORD" --profile gnome --verify
 ```
 
-See [automate a login](automate-login.md) for the typing-based alternative and
-for asserting you reached the desktop.
+`login --verify` checks the same way that the login screen is gone, and fails
+if the server ends the session after the credentials go in, because rdpdo can't
+see the result then. See [automate a login](automate-login.md) for the
+typing-based alternative and for asserting you reached the desktop.
 
 ## Chain the whole sequence
 
@@ -39,7 +50,7 @@ screens:
 
 ```bash
 rdpdo -s 192.168.1.10 \
-  accept-portal gnome --verify \
+  accept-portal gnome \
   unlock gnome "$RDP_PASSWORD" --verify \
   login myuser "$RDP_PASSWORD" --profile gnome --verify \
   expect /tmp/desktop.png 0.95 90

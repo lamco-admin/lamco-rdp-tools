@@ -7,6 +7,41 @@ both binaries (`rdpsee`, `rdpdo`) ship together.
 
 ## [Unreleased]
 
+## [1.4.0] (2026-11-21)
+
+### Changed
+
+- **Breaking:** a `rdpdo` chain in which a `soft` command failed exits `3`. It
+  exited `0`, so a caller couldn't tell it from a clean run without parsing
+  stderr. A chain that also hit a hard failure still exits `1`. `--help`, the
+  man page and the exit codes reference list the codes.
+- `accept-portal --verify` is refused when the chain is parsed. The portal
+  dialog closes on Cancel as well as on Share, so rdpdo's screen can't show
+  which one happened, and the flag only ever logged a line.
+- **Breaking:** a `rdpdo` chain cut short by the server disconnecting exits `1`.
+  It printed a warning, skipped the remaining commands and exited `0`. The
+  error names the last command that ran and how many didn't, the skipped
+  commands are failed testcases in `--junit` output, and a disconnect inside
+  `run`, `boot-sequence` or `play` fails the same way. A disconnect during or
+  after the last command is still not an error, as nothing was left to run.
+- **Breaking:** a `rdpdo` command that reads the screen fails when no screen
+  content has been decoded for it. With nothing decoded by `--frame-wait`
+  rdpdo only warned, and `expect`, `pixel`, `checksum`, `baseline check` and
+  the rest then read the blank framebuffer, so a dark reference could match
+  and `wait-checksum-change` passed when the first frame arrived. Commands that
+  poll the screen wait up to their own timeout for content first, `repeat-key`
+  keeps pressing but compares nothing until content arrives, and the others
+  fail at once, as `capture` already did. It is an ordinary command failure,
+  so `soft` makes it exit `3`.
+
+### Fixed
+
+- `unlock --verify` and `login --verify` check the result. They logged
+  "not yet implemented" and passed. Each now keeps the screen as it is just
+  before the profile's last input, waits up to 15 seconds for the screen to
+  settle, and fails unless at least 25% of it changed, the result is not a
+  single colour, and the server hasn't ended the session.
+
 ## [1.3.0] - 2026-11-07
 
 ### Added

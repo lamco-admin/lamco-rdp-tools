@@ -211,7 +211,6 @@ pub(crate) enum Command {
     AcceptPortal {
         compositor: String,
         profile: Option<String>,
-        verify: bool,
     },
     /// Unlock a locked screen.
     Unlock {
@@ -628,10 +627,17 @@ pub(crate) fn parse_commands(tokens: &[String]) -> Result<Vec<Command>> {
             "accept-portal" => {
                 let compositor = require_arg(tokens, &mut i, "accept-portal")?;
                 let (profile, verify) = peek_provisioning_opts(tokens, &mut i);
+                if verify {
+                    bail!(
+                        "accept-portal --verify is not supported: the portal dialog closes on \
+                         Cancel as well as on Share, so rdpdo's screen can't show which one \
+                         happened. Check the grant where it takes effect, for example by \
+                         connecting to the server that asked for it."
+                    );
+                }
                 commands.push(Command::AcceptPortal {
                     compositor,
                     profile,
-                    verify,
                 });
             }
             "unlock" => {

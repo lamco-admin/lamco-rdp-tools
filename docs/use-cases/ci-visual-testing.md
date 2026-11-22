@@ -41,7 +41,7 @@ the CI test view, and drops a screenshot into `artifacts/` on failure.
 - `wait-still`/`waitfor` synchronize on the screen instead of guessing with
   `pause`, so the test does not race the UI.
 - `diff --exclude` masks clocks and timestamps that would otherwise flap.
-- `soft` marks legitimately-optional elements non-fatal.
+- `soft` lets the run continue past legitimately-optional elements and reports a miss with exit `3`.
 
 ## Building blocks
 

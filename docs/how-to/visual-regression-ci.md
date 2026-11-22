@@ -62,12 +62,13 @@ selects `highlight`, `side-by-side`, or `heatmap`.
 ## Make optional elements non-fatal
 
 Wrap checks that may legitimately be absent in `soft` so they report without
-failing the run:
+stopping the run. A run with a soft failure finishes and exits `3` rather than
+`0`, so let the step accept `3` if those checks shouldn't fail the job:
 
 ```bash
 rdpdo -s host -u user -p pass --junit results.xml \
   soft expect baselines/optional-banner.png 0.9 5 \
-  expect baselines/desktop.png 0.95 60
+  expect baselines/desktop.png 0.95 60 || [ $? = 3 ]
 ```
 
 ## Notes

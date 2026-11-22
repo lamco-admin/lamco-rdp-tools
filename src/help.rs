@@ -847,7 +847,7 @@ static ALL_COMMANDS: &[CommandDoc] = &[
         aliases: &[],
         category: Category::Provisioning,
         summary: "Accept a compositor's screen-sharing permission dialog",
-        syntax: "accept-portal <compositor> [--profile <path>] [--verify]",
+        syntax: "accept-portal <compositor> [--profile <path>]",
         args: &[
             (
                 "<compositor>",
@@ -857,20 +857,19 @@ static ALL_COMMANDS: &[CommandDoc] = &[
                 "--profile <path>",
                 "Path to a custom .rdpdo-script profile.",
             ),
-            (
-                "--verify",
-                "Capture screenshot after sequence and verify acceptance.",
-            ),
         ],
         examples: &[
             "rdpdo -s host accept-portal gnome49",
-            "rdpdo -s host accept-portal kde --verify",
+            "rdpdo -s host accept-portal kde",
             "rdpdo -s host accept-portal --profile ./custom-portal.rdpdo-script",
         ],
         needs_connection: true,
         notes: "Uses built-in key sequences for each compositor's portal dialog. \
                 Profiles are .rdpdo-script files; user profiles in \
-                ~/.config/rdpdo/profiles/accept-portal/ override built-in defaults.",
+                ~/.config/rdpdo/profiles/accept-portal/ override built-in defaults. \
+                --verify is refused here: the dialog closes on Cancel as well as on \
+                Share, so rdpdo's screen can't show which happened. Check the grant \
+                where it takes effect, such as the server that asked for it.",
     },
     CommandDoc {
         name: "unlock",
@@ -882,7 +881,10 @@ static ALL_COMMANDS: &[CommandDoc] = &[
             ("<compositor>", "Compositor name: gnome, kde, sway, etc."),
             ("<password>", "Screen lock password."),
             ("--profile <path>", "Path to a custom unlock profile."),
-            ("--verify", "Verify the screen unlocked after the sequence."),
+            (
+                "--verify",
+                "Fail unless the lock screen is gone once the screen settles.",
+            ),
         ],
         examples: &[
             "rdpdo -s host unlock gnome MyPassword",
@@ -891,7 +893,12 @@ static ALL_COMMANDS: &[CommandDoc] = &[
         needs_connection: true,
         notes: "Pattern: Esc to wake, type password, Enter. Compositor-specific \
                 timing varies. Password is NOT redacted from args (use type-password \
-                for sensitive contexts).",
+                for sensitive contexts). --verify keeps the screen as it is just \
+                before the profile's last input, waits up to 15s for the screen to \
+                settle, and fails unless at least 25% of it changed, the result is \
+                not a single colour, and the session is still connected. For a \
+                stronger check, follow with expect against a reference of the \
+                desktop.",
     },
     CommandDoc {
         name: "login",
@@ -906,7 +913,10 @@ static ALL_COMMANDS: &[CommandDoc] = &[
                 "--profile <name|path>",
                 "Profile name (default, domain, windows) or custom script path.",
             ),
-            ("--verify", "Verify login success after the sequence."),
+            (
+                "--verify",
+                "Fail unless the login screen is gone once the screen settles.",
+            ),
         ],
         examples: &[
             "rdpdo -s host login admin password123",
@@ -916,7 +926,10 @@ static ALL_COMMANDS: &[CommandDoc] = &[
         needs_connection: true,
         notes: "Built-in profiles: 'default' (user Tab pass Enter), 'domain' (domain \
                 Tab user Tab pass Enter), 'windows' (Ctrl+Alt+Del first). Custom \
-                profiles use {username} and {password} placeholders.",
+                profiles use {username} and {password} placeholders. --verify \
+                checks as unlock --verify does, and fails if the server ends the \
+                session after the credentials go in, since rdpdo can't see the \
+                result then.",
     },
     CommandDoc {
         name: "boot-sequence",
@@ -1142,7 +1155,8 @@ static ALL_COMMANDS: &[CommandDoc] = &[
         ],
         needs_connection: false,
         notes: "On failure, prints 'SOFT FAIL: ...' to stderr and continues \
-                the command chain. Soft failures are summarized at the end. \
+                the command chain. Soft failures are summarized at the end, and \
+                a chain that finishes with any exits 3 instead of 0. \
                 In JUnit output, soft failures appear as failed test cases. \
                 Combine with `retry` for resilient automation scripts. \
                 Inspired by Playwright's soft assertions and Robot Framework's \
@@ -1390,6 +1404,15 @@ pub(crate) fn after_help_text() -> String {
     out.push_str("OFFLINE COMMANDS:\n");
     out.push_str("  These commands work without -s/--server:\n");
     out.push_str("    diff, convert, audio-verify, help\n\n");
+
+    out.push_str("EXIT STATUS:\n");
+    out.push_str("  0  every command succeeded\n");
+    out.push_str("  1  a command failed, the connection failed, the server disconnected with\n");
+    out.push_str("     commands still to run, or --timeout elapsed. A command that reads the\n");
+    out.push_str("     screen (expect, capture, pixel, ...) fails if no screen content arrived\n");
+    out.push_str("     for it; marked `soft`, that failure exits 3 instead\n");
+    out.push_str("  2  a global flag could not be parsed (a bad command chain exits 1)\n");
+    out.push_str("  3  the chain finished, but a command marked `soft` failed\n\n");
 
     out.push_str("ENVIRONMENT:\n");
     out.push_str("  RDPDO_EGFX_CAPS=v8   advertise EGFX 8.0 alone, so a server has to send raw\n");

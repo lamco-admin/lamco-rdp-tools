@@ -45,16 +45,60 @@ pub async fn run_cli() {
     let result = tokio::time::timeout(timeout, run(&cli)).await;
 
     match result {
-        Ok(Ok(())) => std::process::exit(0),
+        Ok(Ok(soft_failures)) => std::process::exit(chain_exit_code(soft_failures)),
         Ok(Err(e)) => {
             eprintln!("error: {e:#}");
-            std::process::exit(1);
+            std::process::exit(EXIT_FAILURE);
         }
         Err(_) => {
             eprintln!("error: timeout after {}s", cli.timeout);
-            std::process::exit(1);
+            std::process::exit(EXIT_FAILURE);
         }
     }
+}
+
+/// Exit status of a chain that ran to the end.
+const EXIT_SUCCESS: i32 = 0;
+/// A command failed, the connection failed, or `--timeout` elapsed.
+const EXIT_FAILURE: i32 = 1;
+/// The chain ran to the end, but a command marked `soft` failed. Distinct from 1 so a
+/// caller can still tell a finished chain from an aborted one, and from 2, which clap
+/// uses for global flags it can't parse.
+const EXIT_SOFT_FAILURE: i32 = 3;
+
+fn chain_exit_code(soft_failures: usize) -> i32 {
+    if soft_failures == 0 {
+        EXIT_SUCCESS
+    } else {
+        EXIT_SOFT_FAILURE
+    }
+}
+
+/// The `--junit` failure text for a command the chain never reached.
+const NOT_RUN: &str = "not run: the server disconnected first";
+
+/// `retry` and `soft` only change the command after them, so they don't count as commands
+/// that didn't run.
+fn is_modifier(cmd: &Command) -> bool {
+    matches!(cmd, Command::Retry(_) | Command::Soft)
+}
+
+fn commands_not_run(rest: &[Command]) -> usize {
+    rest.iter().filter(|cmd| !is_modifier(cmd)).count()
+}
+
+/// The chain error for a server that ended the session with commands still to run. There is
+/// no chain verb whose purpose is to end the session, so a disconnect is only an expected
+/// outcome after the last command, and the chain loop never calls this then.
+fn disconnect_error(last_ran: Option<&str>, not_run: usize) -> anyhow::Error {
+    let when = last_ran.map_or_else(
+        || "before the first command".to_owned(),
+        |name| format!("after {name}"),
+    );
+    anyhow::anyhow!(
+        "the server disconnected {when}; {not_run} command{} didn't run",
+        if not_run == 1 { "" } else { "s" }
+    )
 }
 
 /// Counter for failure diagnostic screenshots.
@@ -64,8 +108,9 @@ fn next_fail_id() -> u32 {
     FAIL_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Runs the chain and returns how many `soft` commands failed in it.
 #[expect(clippy::too_many_lines)]
-async fn run(cli: &Cli) -> Result<()> {
+async fn run(cli: &Cli) -> Result<usize> {
     let commands = cli::parse_commands(&cli.commands)?;
 
     // Handle offline-only commands (diff, convert, help) without connecting
@@ -81,7 +126,7 @@ async fn run(cli: &Cli) -> Result<()> {
         for cmd in &commands {
             dispatch_offline(cmd)?;
         }
-        return Ok(());
+        return Ok(0);
     }
 
     // Connect — server is required for non-offline commands
@@ -118,9 +163,9 @@ async fn run(cli: &Cli) -> Result<()> {
     // Wait for the first decoded screen content before executing commands
     let frame_wait = Duration::from_secs_f64(cli.frame_wait.max(0.0));
     let got_content = session.wait_for_content(frame_wait).await?;
-    if !got_content {
+    if !got_content && !session.peer_disconnected() {
         warn!(
-            "No screen content decoded within {:.1}s; proceeding, but captures will fail rather than save a blank framebuffer (adjust with --frame-wait)",
+            "No screen content decoded within {:.1}s; proceeding, but a command that reads the screen fails unless content arrives in time for it (adjust with --frame-wait)",
             frame_wait.as_secs_f64()
         );
     }
@@ -143,10 +188,25 @@ async fn run(cli: &Cli) -> Result<()> {
     let mut soft_failures: Vec<String> = Vec::new();
     let mut pending_retry: u32 = 0;
     let mut pending_soft = false;
+    let mut last_ran: Option<String> = None;
 
     for (cmd_idx, cmd) in commands.iter().enumerate() {
         if session.peer_disconnected() {
-            eprintln!("warning: server disconnected, skipping remaining commands");
+            let rest = &commands[cmd_idx..];
+            if commands_not_run(rest) > 0 {
+                if let Some(ref mut j) = junit {
+                    for (offset, skipped) in rest.iter().enumerate() {
+                        if !is_modifier(skipped) {
+                            let name = format_command_name(skipped, cmd_idx + offset);
+                            j.add(&name, Duration::ZERO, Some(NOT_RUN.to_owned()));
+                        }
+                    }
+                }
+                chain_error = Some(disconnect_error(
+                    last_ran.as_deref(),
+                    commands_not_run(rest),
+                ));
+            }
             break;
         }
 
@@ -167,6 +227,7 @@ async fn run(cli: &Cli) -> Result<()> {
                     chain_error = Some(e);
                     break;
                 }
+                last_ran = Some(format_command_name(cmd, cmd_idx));
                 continue;
             }
             _ => {}
@@ -202,6 +263,7 @@ async fn run(cli: &Cli) -> Result<()> {
                 }
             }
         }
+        last_ran = Some(cmd_name.clone());
 
         if let Some(e) = last_err {
             if let Some(dir) = FAIL_CAPTURE_DIR.get() {
@@ -236,7 +298,10 @@ async fn run(cli: &Cli) -> Result<()> {
 
     // Report soft failures at the end
     if !soft_failures.is_empty() {
-        eprintln!("\n{} soft failure(s):", soft_failures.len());
+        eprintln!(
+            "\n{} soft failure(s), exit status {EXIT_SOFT_FAILURE}:",
+            soft_failures.len()
+        );
         for f in &soft_failures {
             eprintln!("  - {f}");
         }
@@ -257,7 +322,7 @@ async fn run(cli: &Cli) -> Result<()> {
         return Err(e);
     }
 
-    Ok(())
+    Ok(soft_failures.len())
 }
 
 /// Short name for a command in the test report.
@@ -334,17 +399,285 @@ fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max { s } else { &s[..max] }
 }
 
-/// A capture taken before any screen content was decoded is the blank initial
-/// framebuffer, and saving it silently poisons whatever compares against it later.
-fn refuse_blank_capture(session: &HeadlessSession) -> Result<()> {
-    if session.has_content() {
+/// How long a command that reads the framebuffer waits for the first screen content, or
+/// `None` for a command that doesn't read it.
+///
+/// Before any content is decoded the framebuffer is the blank initial one. Reading it gives
+/// an answer about nothing: a capture or baseline that poisons later comparisons, a match
+/// against a dark reference, a checksum change that is only the first frame arriving. A
+/// command that polls the screen until a timeout waits up to that timeout for content to
+/// arrive; one that reads it once doesn't wait. `repeat-key` isn't here because its key
+/// presses may be what makes the server send content, so it checks for content in its own
+/// loop. `wait-still` and `wait-change` aren't here either: they watch update traffic rather
+/// than pixels. The scripts behind `run`, `boot-sequence` and `play` are checked command by
+/// command as they dispatch.
+fn screen_wait(cmd: &Command) -> Option<Duration> {
+    let secs = |s: &u64| Some(Duration::from_secs(*s));
+    match cmd {
+        Command::Expect { timeout_secs, .. }
+        | Command::Waitfor { timeout_secs, .. }
+        | Command::Expectclick { timeout_secs, .. }
+        | Command::Rexpect { timeout_secs, .. }
+        | Command::WaitChecksumChange { timeout_secs, .. }
+        | Command::WaitPixel { timeout_secs, .. }
+        | Command::Measure { timeout_secs, .. } => secs(timeout_secs),
+        Command::Capture(..)
+        | Command::Rcapture { .. }
+        | Command::BaselineUpdate { .. }
+        | Command::BaselineCheck { .. }
+        | Command::Pixel(_)
+        | Command::Checksum(_)
+        | Command::AssertChecksum { .. }
+        | Command::FindColor { .. }
+        | Command::AssertPixel { .. }
+        | Command::Timelapse { .. }
+        | Command::Calibrate { .. } => Some(Duration::ZERO),
+        Command::RepeatKey { .. }
+        | Command::Type(_)
+        | Command::Utype(_)
+        | Command::Key { .. }
+        | Command::Keydown(_)
+        | Command::Keyup(_)
+        | Command::Move(_)
+        | Command::Click(..)
+        | Command::Doubleclick(_)
+        | Command::Drag(..)
+        | Command::Scroll(..)
+        | Command::Pause(_)
+        | Command::TypePassword(_)
+        | Command::Resize(_)
+        | Command::SetClipboard(_)
+        | Command::GetClipboard
+        | Command::WaitStill { .. }
+        | Command::WaitChange { .. }
+        | Command::Info
+        | Command::Perf
+        | Command::Run(_)
+        | Command::Play { .. }
+        | Command::Convert { .. }
+        | Command::Diff { .. }
+        | Command::AcceptPortal { .. }
+        | Command::Unlock { .. }
+        | Command::Login { .. }
+        | Command::BootSequence(_)
+        | Command::BaselineList { .. }
+        | Command::Monitor(_)
+        | Command::ClipboardSendFile(_)
+        | Command::ClipboardRecvFile(_)
+        | Command::AudioCapture { .. }
+        | Command::AudioAssertPlaying { .. }
+        | Command::AudioVerify { .. }
+        | Command::Help(_)
+        | Command::Retry(_)
+        | Command::Soft
+        | Command::MouseHide
+        | Command::Session
+        | Command::Status
+        | Command::Exec { .. }
+        | Command::Watch { .. } => None,
+    }
+}
+
+/// Fails unless screen content has been decoded, waiting up to `wait` for it.
+async fn require_screen(session: &mut HeadlessSession, wait: Duration) -> Result<()> {
+    if session.wait_for_content(wait).await? {
         return Ok(());
     }
-    bail!(
-        "capture refused: no screen content decoded from the server yet; \
-         the framebuffer is blank (wait longer with --frame-wait \
-         or check the server's video pipeline)"
+    bail!("{}", no_screen_message(wait, session.peer_disconnected()));
+}
+
+fn no_screen_message(wait: Duration, disconnected: bool) -> String {
+    let when = if disconnected {
+        "before the server disconnected".to_owned()
+    } else if wait.is_zero() {
+        "yet".to_owned()
+    } else {
+        format!("within {}s", wait.as_secs())
+    };
+    format!(
+        "no screen content decoded from the server {when}; this command reads the screen and \
+         the framebuffer is still blank (wait longer with --frame-wait or check the server's \
+         video pipeline)"
+    )
+}
+
+/// Dispatches the commands of a script file, failing if the server ends the session before
+/// the script does.
+async fn run_script_commands(
+    session: &mut HeadlessSession,
+    cmds: &[Command],
+    kind: &str,
+    path: &str,
+) -> Result<()> {
+    for (idx, cmd) in cmds.iter().enumerate() {
+        if session.peer_disconnected() {
+            let not_run = commands_not_run(&cmds[idx..]);
+            if not_run == 0 {
+                break;
+            }
+            bail!(
+                "the server disconnected during {kind} '{path}' after {idx} of {} command{}; \
+                 {not_run} didn't run",
+                cmds.len(),
+                if cmds.len() == 1 { "" } else { "s" }
+            );
+        }
+        dispatch_command(session, cmd).await?;
+    }
+    Ok(())
+}
+
+/// A provisioning verb whose `--verify` rdpdo can check from its own session.
+///
+/// Both put a screen in front of the desktop that goes away when the credentials are right
+/// and stays, perhaps with an error line, when they are wrong. `accept-portal` is not here:
+/// its dialog closes on Cancel as well as on Share, so the screen can't tell the two apart,
+/// and the parser refuses `accept-portal --verify`.
+#[derive(Debug, Clone, Copy)]
+enum Verified {
+    Unlock,
+    Login,
+}
+
+impl Verified {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Unlock => "unlock",
+            Self::Login => "login",
+        }
+    }
+
+    fn screen(self) -> &'static str {
+        match self {
+            Self::Unlock => "lock screen",
+            Self::Login => "login screen",
+        }
+    }
+}
+
+/// Share of the screen that must change after the credentials are submitted for the lock or
+/// login screen to count as gone. A rejected password changes a prompt's field and error
+/// line, a few percent of the screen; a desktop replaces nearly all of it.
+const VERIFY_MIN_CHANGED: f64 = 0.25;
+/// Per-channel difference for a pixel to count as changed, past codec noise.
+const VERIFY_PIXEL_THRESHOLD: u8 = 32;
+/// Below this share of pixels differing from one colour, the screen counts as blank.
+const VERIFY_BLANK_MAX: f64 = 0.005;
+/// Time for typed characters to reach the framebuffer before it is kept for comparison.
+const VERIFY_DRAIN: Duration = Duration::from_millis(500);
+const VERIFY_STILLNESS: Duration = Duration::from_secs(1);
+const VERIFY_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Runs a provisioning profile's commands. With `verify`, keeps the screen as it is just
+/// before the profile's last input (the submit), lets the screen settle after the profile,
+/// and fails unless the lock or login screen has gone.
+async fn run_profile(
+    session: &mut HeadlessSession,
+    cmds: &[Command],
+    verify: Option<Verified>,
+) -> Result<()> {
+    let Some(verified) = verify else {
+        for cmd in cmds {
+            dispatch_command(session, cmd).await?;
+        }
+        return Ok(());
+    };
+    let verb = verified.verb();
+
+    let submit = cmds
+        .iter()
+        .rposition(|cmd| !matches!(cmd, Command::Pause(_)))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{verb} --verify: the profile sends no input, so there is nothing to check"
+            )
+        })?;
+    let (setup, from_submit) = cmds.split_at(submit);
+
+    for cmd in setup {
+        dispatch_command(session, cmd).await?;
+    }
+    session.run_for(VERIFY_DRAIN).await?;
+    if !session.has_content() {
+        bail!(
+            "{verb} --verify: no screen content decoded before the profile submitted, \
+             so there is no {} to compare against",
+            verified.screen()
+        );
+    }
+    let submitted_on = session.current_frame();
+
+    for cmd in from_submit {
+        dispatch_command(session, cmd).await?;
+    }
+
+    let settled = session
+        .wait_still(VERIFY_STILLNESS, VERIFY_SETTLE_TIMEOUT)
+        .await?;
+    if session.peer_disconnected() {
+        bail!(
+            "{verb} --verify: the server ended the session after the profile submitted, \
+             so rdpdo can't see whether the {verb} succeeded"
+        );
+    }
+    if !settled {
+        warn!(
+            "{verb} --verify: the screen was still changing after {}s; comparing it as it is",
+            VERIFY_SETTLE_TIMEOUT.as_secs()
+        );
+    }
+
+    let changed = check_screen_left(verified, &submitted_on, &session.current_frame())?;
+    info!(
+        changed_pct = format!("{:.1}", changed * 100.0),
+        "{verb} verified: the {} is gone",
+        verified.screen()
     );
+    Ok(())
+}
+
+/// Checks that `after` no longer shows the screen in `submitted_on` and returns the share of
+/// pixels that changed.
+fn check_screen_left(
+    verified: Verified,
+    submitted_on: &image::RgbaImage,
+    after: &image::RgbaImage,
+) -> Result<f64> {
+    let verb = verified.verb();
+    let width = submitted_on.width().min(after.width());
+    let height = submitted_on.height().min(after.height());
+    let total = f64::from(width) * f64::from(height);
+    if total == 0.0 {
+        bail!("{verb} --verify: the framebuffer is empty");
+    }
+
+    let changed = matching::count_different_pixels(submitted_on, after, VERIFY_PIXEL_THRESHOLD)
+        as f64
+        / total;
+    if changed < VERIFY_MIN_CHANGED {
+        bail!(
+            "{verb} --verify failed: the {} is still on screen ({:.1}% of pixels changed after \
+             the profile submitted, {:.0}% needed)",
+            verified.screen(),
+            changed * 100.0,
+            VERIFY_MIN_CHANGED * 100.0
+        );
+    }
+
+    // A screen that blanked (power saving, a crashed session) also differs from the prompt.
+    let first = after.get_pixel(0, 0);
+    let off_colour = after
+        .pixels()
+        .filter(|p| (0..3).any(|c| p[c].abs_diff(first[c]) > VERIFY_PIXEL_THRESHOLD))
+        .count() as f64;
+    if off_colour / f64::from(after.width() * after.height()) < VERIFY_BLANK_MAX {
+        bail!(
+            "{verb} --verify failed: the screen went to a single colour after the profile \
+             submitted, which doesn't show whether the {verb} succeeded"
+        );
+    }
+
+    Ok(changed)
 }
 
 fn dispatch_command<'a>(
@@ -356,6 +689,9 @@ fn dispatch_command<'a>(
 
 #[expect(clippy::too_many_lines)]
 async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) -> Result<()> {
+    if let Some(wait) = screen_wait(cmd) {
+        require_screen(session, wait).await?;
+    }
     match cmd {
         Command::Type(text) => {
             session.send_text(text).await?;
@@ -427,7 +763,6 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
             session.run_for(Duration::from_millis(millis)).await?;
         }
         Command::Capture(path, region) => {
-            refuse_blank_capture(session)?;
             capture::save_capture(session, path, region.as_deref())?;
         }
         Command::TypePassword(source) => {
@@ -806,7 +1141,19 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
             info!(key, template, tolerance, "Repeat-key until match");
 
             loop {
-                if deadline.saturating_duration_since(Instant::now()).is_zero() {
+                let timed_out = deadline.saturating_duration_since(Instant::now()).is_zero();
+                let pressed_out = max_presses.is_some_and(|max| press_count >= max);
+                if (timed_out || pressed_out) && !session.has_content() {
+                    bail!(
+                        "repeat-key: {}",
+                        no_screen_message(
+                            Duration::from_secs(*timeout_secs),
+                            session.peer_disconnected()
+                        )
+                    );
+                }
+
+                if timed_out {
                     let screen = session.current_frame();
                     let fail_path = format!("/tmp/rdpdo-fail-{:03}.png", next_fail_id());
                     let _ = screen.save(&fail_path);
@@ -832,6 +1179,11 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
                 press_count += 1;
                 session.run_for(Duration::from_millis(*interval_ms)).await?;
 
+                // The key presses may be what wakes a screen that hasn't sent anything yet,
+                // so keep pressing, but never match against the blank framebuffer.
+                if !session.has_content() {
+                    continue;
+                }
                 let screen = session.current_frame();
 
                 // Needle set mode
@@ -930,22 +1282,15 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
             println!("{}", serde_json::to_string_pretty(&perf)?);
         }
         Command::Rcapture { region, path } => {
-            refuse_blank_capture(session)?;
             capture::save_capture(session, path, Some(region.as_str()))?;
         }
         Command::AcceptPortal {
             compositor,
             profile,
-            verify,
         } => {
             info!(compositor, "Accepting portal dialog");
             let profile_cmds = provision::accept_portal_commands(compositor, profile.as_deref())?;
-            for pcmd in &profile_cmds {
-                dispatch_command(session, pcmd).await?;
-            }
-            if *verify {
-                info!("Verification requested but needle system not yet implemented");
-            }
+            run_profile(session, &profile_cmds, None).await?;
         }
         Command::Unlock {
             compositor,
@@ -957,12 +1302,7 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
             let resolved_password = cli::resolve_password(password)?;
             let profile_cmds =
                 provision::unlock_commands(compositor, &resolved_password, profile.as_deref())?;
-            for pcmd in &profile_cmds {
-                dispatch_command(session, pcmd).await?;
-            }
-            if *verify {
-                info!("Verification requested but needle system not yet implemented");
-            }
+            run_profile(session, &profile_cmds, verify.then_some(Verified::Unlock)).await?;
         }
         Command::Login {
             username,
@@ -981,12 +1321,7 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
                 domain.as_deref(),
                 custom_profile.as_deref(),
             )?;
-            for pcmd in &profile_cmds {
-                dispatch_command(session, pcmd).await?;
-            }
-            if *verify {
-                info!("Verification requested but needle system not yet implemented");
-            }
+            run_profile(session, &profile_cmds, verify.then_some(Verified::Login)).await?;
         }
         Command::Pixel(pos) => {
             let (width, height) = session.image_dimensions();
@@ -1148,13 +1483,7 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
                 height,
             };
             let script_commands = script::parse_script_with_vars(script_path, Some(&vars))?;
-            for script_cmd in &script_commands {
-                if session.peer_disconnected() {
-                    eprintln!("warning: server disconnected during boot sequence, aborting");
-                    break;
-                }
-                dispatch_command(session, script_cmd).await?;
-            }
+            run_script_commands(session, &script_commands, "boot sequence", script_path).await?;
         }
         Command::Run(script_path) => {
             info!(script_path, "Executing script");
@@ -1165,13 +1494,7 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
                 height,
             };
             let script_commands = script::parse_script_with_vars(script_path, Some(&vars))?;
-            for script_cmd in &script_commands {
-                if session.peer_disconnected() {
-                    eprintln!("warning: server disconnected during script, aborting");
-                    break;
-                }
-                dispatch_command(session, script_cmd).await?;
-            }
+            run_script_commands(session, &script_commands, "script", script_path).await?;
         }
         Command::Play { path, speed } => {
             info!(path, speed, "Replaying recording");
@@ -1182,8 +1505,13 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
 
             for (idx, tokens) in token_sets.iter().enumerate() {
                 if session.peer_disconnected() {
-                    eprintln!("warning: server disconnected during playback, aborting");
-                    break;
+                    let left = token_sets.len() - idx;
+                    bail!(
+                        "the server disconnected during playback of '{path}' after {idx} of {} \
+                         recorded event{}; {left} didn't play",
+                        token_sets.len(),
+                        if token_sets.len() == 1 { "" } else { "s" }
+                    );
                 }
 
                 // Respect inter-event timing
@@ -1209,7 +1537,6 @@ async fn dispatch_command_inner(session: &mut HeadlessSession, cmd: &Command) ->
                 .map_err(|e| anyhow::anyhow!("create baseline dir: {e}"))?;
 
             let path = baselines_dir.join(format!("{name}.png"));
-            refuse_blank_capture(session)?;
             session.save_screenshot(&path)?;
             info!(name, path = %path.display(), "Baseline saved");
             println!("{}", path.display());
@@ -2581,4 +2908,193 @@ fn init_tracing(verbose: bool) {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use image::{Rgba, RgbaImage};
+
+    use super::*;
+
+    /// A 100x100 prompt: a mid-grey background with a darker 20x10 field.
+    fn prompt() -> RgbaImage {
+        let mut img = RgbaImage::from_pixel(100, 100, Rgba([90, 90, 90, 255]));
+        for y in 45..55 {
+            for x in 40..60 {
+                img.put_pixel(x, y, Rgba([30, 30, 30, 255]));
+            }
+        }
+        img
+    }
+
+    /// A 100x100 desktop: a blue wallpaper with a light 100x8 panel along the top.
+    fn desktop() -> RgbaImage {
+        let mut img = RgbaImage::from_pixel(100, 100, Rgba([20, 60, 160, 255]));
+        for y in 0..8 {
+            for x in 0..100 {
+                img.put_pixel(x, y, Rgba([230, 230, 230, 255]));
+            }
+        }
+        img
+    }
+
+    // oracle: regression rdpdo 1.3.0 run, whose chain exited 0 after a soft command failed
+    #[test]
+    fn a_chain_with_a_soft_failure_exits_3() {
+        assert_eq!(chain_exit_code(0), 0);
+        assert_eq!(chain_exit_code(1), 3);
+        assert_eq!(chain_exit_code(4), 3);
+    }
+
+    // oracle: regression rdpdo 1.3.0 unlock and login --verify, which only logged and passed
+    #[test]
+    fn verify_fails_while_the_prompt_is_still_on_screen() {
+        let before = prompt();
+        let mut rejected = prompt();
+        // The field cleared and a 30x3 error line appeared: 2.9% of the screen.
+        for y in 45..55 {
+            for x in 40..60 {
+                rejected.put_pixel(x, y, Rgba([90, 90, 90, 255]));
+            }
+        }
+        for y in 60..63 {
+            for x in 35..65 {
+                rejected.put_pixel(x, y, Rgba([200, 40, 40, 255]));
+            }
+        }
+
+        for verified in [Verified::Unlock, Verified::Login] {
+            let err = check_screen_left(verified, &before, &rejected).unwrap_err();
+            assert!(
+                err.to_string().contains(verified.screen()),
+                "{verified:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn verify_passes_when_the_desktop_replaces_the_prompt() {
+        let changed = check_screen_left(Verified::Login, &prompt(), &desktop()).unwrap();
+        assert!(changed > 0.9, "{changed}");
+    }
+
+    // oracle: mutant a check that counts a blanked screen as the prompt having gone
+    #[test]
+    fn verify_fails_when_the_screen_goes_to_one_colour() {
+        let black = RgbaImage::from_pixel(100, 100, Rgba([0, 0, 0, 255]));
+        let err = check_screen_left(Verified::Unlock, &prompt(), &black).unwrap_err();
+        assert!(err.to_string().contains("single colour"), "{err}");
+    }
+
+    // oracle: mutant a threshold that passes any change at all, such as a moved focus ring
+    #[test]
+    fn verify_needs_a_quarter_of_the_screen_to_change() {
+        let before = prompt();
+        let mut after = prompt();
+        // Rows 0 to 23: 24% of the screen.
+        for y in 0..24 {
+            for x in 0..100 {
+                after.put_pixel(x, y, Rgba([250, 250, 250, 255]));
+            }
+        }
+        assert!(check_screen_left(Verified::Unlock, &before, &after).is_err());
+
+        for x in 0..100 {
+            after.put_pixel(x, 24, Rgba([250, 250, 250, 255]));
+        }
+        assert!(check_screen_left(Verified::Unlock, &before, &after).is_ok());
+    }
+
+    fn parse(tokens: &[&str]) -> Vec<Command> {
+        let tokens: Vec<String> = tokens.iter().map(|t| (*t).to_owned()).collect();
+        cli::parse_commands(&tokens).expect("valid chain")
+    }
+
+    // oracle: regression rdpdo 1.3.0 chain cut short by a disconnect, which exited 0
+    #[test]
+    fn a_disconnect_counts_the_commands_that_did_not_run() {
+        let chain = parse(&[
+            "type", "hello", "soft", "retry", "2", "expect", "ref.png", "capture", "out.png",
+        ]);
+        // The server went away after `type`: `soft` and `retry 2` belong to the `expect`.
+        assert_eq!(commands_not_run(&chain[1..]), 2);
+        assert_eq!(commands_not_run(&chain[2..]), 2);
+        assert_eq!(commands_not_run(&chain[4..]), 1);
+        assert_eq!(commands_not_run(&chain[5..]), 0);
+
+        let err = disconnect_error(Some("[0] type hello"), 2).to_string();
+        assert!(err.contains("after [0] type hello"), "{err}");
+        assert!(err.contains("2 commands didn't run"), "{err}");
+
+        let err = disconnect_error(None, 1).to_string();
+        assert!(err.contains("before the first command"), "{err}");
+        assert!(err.contains("1 command didn't run"), "{err}");
+    }
+
+    // oracle: mutant a trailing modifier counted as a command the disconnect skipped
+    #[test]
+    fn a_trailing_modifier_is_not_a_skipped_command() {
+        let chain = parse(&["type", "x", "soft"]);
+        assert_eq!(commands_not_run(&chain[1..]), 0);
+    }
+
+    // oracle: regression rdpdo 1.3.0 reading a blank framebuffer after only a warning
+    #[test]
+    fn commands_that_read_the_screen_need_content() {
+        let polls = parse(&["expect", "ref.png", "0.9", "7"]);
+        assert_eq!(screen_wait(&polls[0]), Some(Duration::from_secs(7)));
+
+        let polls = parse(&["wait-checksum-change", "0,0,10,10", "4"]);
+        assert_eq!(screen_wait(&polls[0]), Some(Duration::from_secs(4)));
+
+        for chain in [
+            &["capture", "out.png"][..],
+            &["pixel", "10,10"],
+            &["checksum", "0,0,10,10"],
+            &["assert-checksum", "0,0,10,10", "deadbeef"],
+        ] {
+            let cmds = parse(chain);
+            assert_eq!(screen_wait(&cmds[0]), Some(Duration::ZERO), "{chain:?}");
+        }
+
+        // repeat-key checks for content in its own loop, as its presses may be what brings it.
+        for chain in [
+            &["type", "hello"][..],
+            &["repeat-key", "Escape", "lock.png"],
+            &["key", "Return"],
+            &["pause", "1"],
+            &["wait-still"],
+            &["wait-change"],
+            &["info"],
+        ] {
+            let cmds = parse(chain);
+            assert_eq!(screen_wait(&cmds[0]), None, "{chain:?}");
+        }
+    }
+
+    #[test]
+    fn the_no_screen_error_says_how_long_it_waited() {
+        assert!(no_screen_message(Duration::ZERO, false).contains("from the server yet"));
+        assert!(no_screen_message(Duration::from_secs(30), false).contains("within 30s"));
+        assert!(
+            no_screen_message(Duration::from_secs(30), true)
+                .contains("before the server disconnected")
+        );
+    }
+
+    #[test]
+    fn accept_portal_refuses_verify() {
+        let tokens: Vec<String> = ["accept-portal", "gnome49", "--verify"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let err = cli::parse_commands(&tokens).unwrap_err();
+        assert!(err.to_string().contains("not supported"), "{err}");
+
+        let tokens: Vec<String> = ["accept-portal", "gnome49"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert!(cli::parse_commands(&tokens).is_ok());
+    }
 }

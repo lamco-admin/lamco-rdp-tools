@@ -36,8 +36,12 @@ place the credentials correctly:
 rdpdo -s 192.168.1.10 login myuser "$RDP_PASSWORD" --profile gnome --verify
 ```
 
-`--verify` checks that the login took effect. Profiles live under
-`~/.config/rdpdo/profiles/`.
+`--verify` fails the command unless the login screen is gone once the screen
+settles: at least 25% of the screen must differ from how it looked just before
+the profile submitted, and the session must still be connected. It can't tell a
+desktop from some other screen that replaced the login screen, so follow it with
+`expect` against a reference of the desktop when that matters. Profiles live
+under `~/.config/rdpdo/profiles/`.
 
 ## Make it robust
 
